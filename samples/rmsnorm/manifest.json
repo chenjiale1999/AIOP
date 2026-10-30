@@ -1,0 +1,80 @@
+{
+  "task_id": "sample-rmsnorm",
+  "spec": {
+    "name": "rmsnorm",
+    "family": "rmsnorm",
+    "formula": "y = x / sqrt(mean(x^2) + eps) * w",
+    "inputs": [
+      {
+        "name": "X",
+        "shape": [
+          128,
+          4096
+        ],
+        "dtype": "float32"
+      },
+      {
+        "name": "W",
+        "shape": [
+          4096
+        ],
+        "dtype": "float32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "Y",
+        "shape": [
+          128,
+          4096
+        ],
+        "dtype": "float32"
+      }
+    ],
+    "precision": {
+      "atol": 1e-05,
+      "rtol": 1e-05,
+      "max_abs_error": 0.0001,
+      "matched_ratio": 0.9999
+    },
+    "perf": {
+      "metric": "latency",
+      "target": null,
+      "unit": "ms"
+    },
+    "attrs": {
+      "eps": 1e-06
+    },
+    "notes": "",
+    "version": "1"
+  },
+  "plan": {
+    "family": "rmsnorm",
+    "variant": "simt_row_reducer",
+    "blocks": 64,
+    "tile": 0,
+    "rows": 2,
+    "threads": 128,
+    "tile_extent": 4096,
+    "num_stages": 2,
+    "iterations": 1,
+    "block_m": 0,
+    "block_n": 0,
+    "block_k": 0,
+    "epilogue": "none",
+    "tail_mode": "exact",
+    "buffer_bytes": {
+      "x": 65536,
+      "acc": 16,
+      "w": 16384
+    }
+  },
+  "generator": "template",
+  "tilelang_repo": "/home/cjl/workspace/tilelang",
+  "cann_home": "/usr/local/Ascend/cann-9.2.0",
+  "device_flags": [
+    "-D__INTEL_LLVM_COMPILER=1",
+    "-DSYCL_LANGUAGE_VERSION=1"
+  ],
+  "created_at": "2026-10-29T22:15:40"
+}

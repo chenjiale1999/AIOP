@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "taxonomy_id": "okf-core-v10",
+  "status": "frozen",
+  "provenance": "core-v9 (taxonomy/tag-taxonomy.json) 按《字段与推导规范》第3/8节裁剪：删除可推导 namespace（api_surfaces/families/objects/execution_models/source_locations/destination_locations）与可推导 trait 值（masked/deprecated）",
+  "required_namespaces": [
+    "roles"
+  ],
+  "namespaces": {
+    "roles": {
+      "description": "",
+      "required": true,
+      "values": {
+        "compute": "Produces values through a computation",
+        "workspace_query": "Host-side API that returns the workspace capacity required by another computation.",
+        "data_initialization": "Initializes a documented memory region with a value.",
+        "data_movement": "Moves documented data between logical storage locations.",
+        "data_movement_configuration": "Configures state or parameters that a later documented data-movement API consumes.",
+        "query": "Reads or returns documented system, status, configuration, or post-operation information without carrying out the primary data action.",
+        "configuration": "Configures documented execution state, a computation mode, or a reusable control value for a later API action.",
+        "control": "Directly changes documented runtime or cache control state rather than producing a data result."
+      }
+    },
+    "operations": {
+      "description": "",
+      "required": false,
+      "values": {
+        "absolute": "Absolute value",
+        "add": "Addition",
+        "bilinear_interpolation": "Bilinear interpolation",
+        "bitwise_and": "Bitwise AND",
+        "bitwise_not": "Bitwise NOT",
+        "bitwise_or": "Bitwise OR",
+        "bitwise_shift": "Bitwise left or right shift",
+        "bitwise_xor": "Bitwise XOR",
+        "broadcast": "Replicates a documented source value or element across a destination extent.",
+        "compact": "Compacts participating elements into consecutive result positions.",
+        "comparison": "Compares operands and produces a documented predicate or comparison result.",
+        "compression": "Packs selected data into a denser documented representation or destination.",
+        "conversion": "Converts a documented value, vector representation, or data type into another representation or type.",
+        "divide": "Division",
+        "exponential": "Natural exponential",
+        "leaky_relu": "Leaky ReLU",
+        "gather": "Collects elements selected by documented indexes or addresses into a result.",
+        "histogram": "Computes a documented frequency or cumulative histogram.",
+        "log10": "Base-10 logarithm",
+        "log2": "Base-2 logarithm",
+        "matrix_multiply_accumulate": "Performs documented matrix multiplication with accumulation.",
+        "maximum": "Element-wise maximum",
+        "minimum": "Element-wise minimum",
+        "multiply": "Multiplication",
+        "natural_log": "Natural logarithm",
+        "negate": "Arithmetic negation",
+        "prelu": "Parametric ReLU",
+        "reciprocal": "Reciprocal",
+        "reciprocal_sqrt": "Reciprocal square root",
+        "relu": "ReLU",
+        "scatter": "Writes elements to documented index-selected destination positions.",
+        "selection": "Selects output elements from documented alternative sources using a predicate or mask.",
+        "sort": "Sorts elements or lanes into a documented order.",
+        "sqrt": "Square root",
+        "subtract": "Subtraction",
+        "synchronization": "Coordinates documented execution ordering or visibility.",
+        "copy": "Transfers documented data from a source location to a destination location.",
+        "fill": "Writes a scalar value into a destination memory region.",
+        "layout_transform": "Changes the documented data layout while transferring data, including ND, Nz, and DN layout conversions.",
+        "transpose": "Performs a documented matrix transpose as part of the API action.",
+        "reduction": "Aggregates participating elements of an input into one or more summary values, including sums and extrema.",
+        "load": "Transfers a documented data sequence from memory or a source location into a register, local buffer, or other processing destination.",
+        "store": "Transfers a documented register or local data result to a destination memory location.",
+        "fused_multiply_add": "Performs a documented multiplication and addition as one API action, optionally using an accumulator or scalar factor.",
+        "bit_manipulation": "Performs a documented bit counting, searching, setting, clearing, or other bit-level manipulation that is not one of the separately modeled boolean operations.",
+        "interleave": "Alternates corresponding elements or documented element groups from two source sequences into an interleaved destination sequence or destination sequence pair.",
+        "deinterleave": "Separates alternating even- and odd-positioned elements or documented element groups of an interleaved input arrangement into distinct output sequences.",
+        "img2col": "Performs an Image-to-Column style layout expansion that reorganizes input feature data into matrix operands during a 3D load."
+      }
+    },
+    "traits": {
+      "description": "",
+      "required": false,
+      "values": {
+        "carry_input": "Consumes a carry or no-borrow input",
+        "count_limited": "Supports calculating a leading count of elements",
+        "elementwise": "Operates independently per element",
+        "flexible_scalar": "Accepts a flexible scalar representation",
+        "high_dimensional": "Supports high-dimensional split calculation",
+        "operator_overload": "Exposed through operator syntax",
+        "scalar_operand": "Supports a scalar operand",
+        "split_high_low": "Splits a result into high and low parts",
+        "supports_carry_output": "At least one form exposes carry or no-borrow output",
+        "widening_result": "Produces a result wider than each source element",
+        "temporary_workspace": "The documented computation requires temporary storage for intermediate values, supplied by the caller or allocated by its framework.",
+        "padding": "Supports adding documented padding data or values during a data transfer.",
+        "quantization": "Supports quantization as a documented in-transfer behaviour.",
+        "unaligned_transfer": "Supports a documented data transfer that is explicitly non-aligned.",
+        "atomic": "Performs a documented atomic action, or directly enables or disables a documented atomic data-movement behavior.",
+        "post_update": "Automatically updates a documented source or destination address after completing the API action.",
+        "rounding_mode": "Exposes or applies a documented rounding behavior during a computation or conversion.",
+        "saturation_mode": "Exposes or applies a documented saturation or non-saturation behavior during a computation or conversion.",
+        "sparse_input": "Accepts a documented sparse matrix or sparse data input as part of its primary action.",
+        "inter_core_synchronization": "The API's documented behavior provides synchronization across AI Cores or between AIC and AIV execution units, including block/subblock-level coordination within a core.",
+        "aligned_transfer": "搬运或访存要求地址或数据块按固定粒度（通常 32 字节）对齐的稳定特征；与既有 unaligned_transfer 构成对齐维度的两端，用于区分对齐搬运接口与支持非对齐的搬运接口。",
+        "datablock_granularity": "以 DataBlock（32 字节）为搬运、广播或重排粒度的稳定特征，用于区分按元素粒度操作与按 DataBlock 粒度操作的接口。"
+      }
+    }
+  },
+  "base_version": "core-v10-base-taxonomy.json",
+  "approved_additions": [
+    {
+      "tag": "traits:aligned_transfer",
+      "definition": "搬运或访存要求地址或数据块按固定粒度（通常 32 字节）对齐的稳定特征；与既有 unaligned_transfer 构成对齐维度的两端，用于区分对齐搬运接口与支持非对齐的搬运接口。",
+      "selection_rule": "正文明确要求源或目的地址、或搬运数据大小按字节粒度对齐（如「32字节对齐」「以对齐的方式搬出」）时选择；非对齐能力由 unaligned_transfer 表达，两者可并存。",
+      "evidence": [
+        {
+          "path": "docs/zh/api/SIMD-API/c_api/reg_compute/store/asc_storealign.md",
+          "excerpt": "将矢量数据寄存器或掩码寄存器中的数据以对齐的方式搬出到Unified Buffer（UB）"
+        },
+        {
+          "path": "docs/zh/api/SIMD-API/c_api/vector_datamove/asc_copy_gm2ub/asc_copy_gm2ub_arch_2201.md",
+          "excerpt": "当采用前n个数据搬运接口时，搬运数据大小要求32字节对齐"
+        },
+        {
+          "path": "docs/zh/api/SIMD-API/c_api/reg_compute/load/asc_loadalign_brc_datablock_postupdate.md",
+          "excerpt": "从Unified Buffer（UB）中32字节对齐的起始地址读取一个`DataBlock`（32字节）"
+        }
+      ]
+    },
+    {
+      "tag": "traits:datablock_granularity",
+      "definition": "以 DataBlock（32 字节）为搬运、广播或重排粒度的稳定特征，用于区分按元素粒度操作与按 DataBlock 粒度操作的接口。",
+      "selection_rule": "正文说明按 DataBlock（32 字节）粒度读取、搬运、广播或收集数据时选择。",
+      "evidence": [
+        {
+          "path": "docs/zh/api/SIMD-API/c_api/vector_compute/vector_gather/asc_gather_datablock.md",
+          "excerpt": "根据偏移地址按照DataBlock的粒度将输入矢量收集到目的矢量中"
+        },
+        {
+          "path": "docs/zh/api/SIMD-API/c_api/reg_compute/load/asc_loadalign_brc_datablock_postupdate.md",
+          "excerpt": "读取一个`DataBlock`（32字节），并将该`DataBlock`广播到整个矢量数据寄存器"
+        },
+        {
+          "path": "docs/zh/api/SIMD-API/c_api/vector_compute/vector_broadcast/asc_brcb.md",
+          "excerpt": "每一次取输入矢量中的8个数填充到结果矢量的8个datablock（32Bytes）中去"
+        }
+      ]
+    }
+  ],
+  "approval": {
+    "schema_version": 1,
+    "purpose": "human_taxonomy_approval",
+    "run_id": "core-v10",
+    "decision": "approve",
+    "approver": "项目维护者（交互会话批准）",
+    "approved_at": "2026-09-30T12:50:00+08:00",
+    "comment": "批准 core-v10：3 语义 namespace（roles/operations/traits）、新增 aligned_transfer 与 datablock_granularity、6 个可推导 namespace 与 masked/deprecated 改为索引期推导；strided_transfer 等遗留候选记录在案待下轮复议。"
+  }
+}

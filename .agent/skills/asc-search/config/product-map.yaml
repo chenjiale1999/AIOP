@@ -1,0 +1,44 @@
+# 产品映射（唯一事实源，机器可读）。
+#
+# 用途：asc-search 筛选条件（--arch 架构号或检索标签 -> 架构号）与产品支持推导
+#（文档正文 <!-- npu="X" --> 标记 -> 架构号 -> 产品代际）。
+# 本文件为唯一事实源；新增产品时直接维护本文件。
+
+schema_version: 1
+
+# NPU_ARCH 架构号 -> 信息表
+archs:
+  "3510":
+    labels: []
+    soc_versions: [Ascend950]
+    npu_markers: ["950"]
+    products:
+      - Ascend 950PR系列产品（Atlas 350加速卡、Atlas 850超节点、Atlas 650服务器）
+      - Ascend 950DT系列产品（Atlas 850E超节点、Atlas 650E服务器、Atlas 950 SuperPoD超节点）
+  "2201":
+    labels: [A3, A2]
+    soc_versions: [ascend910_93, ascend910b]
+    npu_markers: ["A3", "910b"]
+    products:
+      - Ascend A3训练系列产品（Atlas 800T A3、Atlas 9000 A3 SuperPoD、A200T A3 BoX8）
+      - Ascend A3推理系列产品（Atlas 800I A3）
+      - Atlas A2训练系列产品（Atlas 800T A2、Atlas 900 A2 PoD、Atlas 200T A2 Box16）
+      - Atlas A2推理系列产品（Atlas 800I A2、Atlas 300I A2、A200I A2 Box）
+  "3002":
+    labels: []
+    soc_versions: [ascend310b]
+    npu_markers: ["310b"]
+    products:
+      - Atlas 200I/500 A2推理产品（Atlas 500 A2智能小站、Atlas 200I DK A2、Atlas 200I A2加速模块）
+  "2002":
+    labels: []
+    soc_versions: [ascend910, ascend310p]
+    npu_markers: ["310p"]
+    products:
+      - Atlas推理系列产品（300I Pro/300V/300V Pro/300I Duo加速卡、200I SoC A1、500 Pro边缘服务器、800推理服务器）
+  "1001":
+    labels: []
+    soc_versions: [ascend910]
+    npu_markers: ["910"]
+    products:
+      - Atlas训练系列产品（Atlas 800（9000/9010）、Atlas 900 PoD（9000/Lite）、Atlas 300T（9000/Pro））

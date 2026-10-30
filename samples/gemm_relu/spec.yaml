@@ -1,0 +1,49 @@
+{
+  "name": "gemm_relu",
+  "family": "gemm",
+  "formula": "C = relu(A @ B.T)",
+  "inputs": [
+    {
+      "name": "A",
+      "shape": [
+        256,
+        128
+      ],
+      "dtype": "bfloat16"
+    },
+    {
+      "name": "B",
+      "shape": [
+        224,
+        128
+      ],
+      "dtype": "bfloat16"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "C",
+      "shape": [
+        256,
+        224
+      ],
+      "dtype": "float32"
+    }
+  ],
+  "precision": {
+    "atol": 1e-05,
+    "rtol": 1e-05,
+    "max_abs_error": 0.0001,
+    "matched_ratio": 0.9999
+  },
+  "perf": {
+    "metric": "latency",
+    "target": null,
+    "unit": "ms"
+  },
+  "attrs": {
+    "epilogue": "relu"
+  },
+  "notes": "",
+  "version": "1"
+}

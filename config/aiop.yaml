@@ -1,0 +1,52 @@
+paths:
+  tilelang_repo: /home/cjl/workspace/tilelang
+  workspace: /home/cjl/workspace/aiop/workspace
+  knowledge: /home/cjl/workspace/aiop/knowledge
+  samples: /home/cjl/workspace/aiop/samples
+  reports: /home/cjl/workspace/aiop/reports
+
+cann:
+  # A5 (dav-3510) headers/instructions require CANN 9.2.
+  home: /usr/local/Ascend/cann-9.2.0
+  npusim: ""
+  soc_version: Ascend950
+
+compile:
+  target: ascend
+  npu_arch: dav-3510
+  device_flags:
+    - -D__INTEL_LLVM_COMPILER=1
+    - -DSYCL_LANGUAGE_VERSION=1
+  timeout_s: 600
+
+simulation:
+  backend: auto
+  timeout_s: 1800
+  repeats: 20
+  warmup: 5
+
+board:
+  host: ""
+  port: 22
+  key: ""
+  remote_dir: /tmp/aiop_runs
+  python: python3
+  env_script: ""
+  tilelang_repo: ""
+  # Optional: run a profiling command after the measurement, e.g.
+  #   npu-smi info -t usages
+  #   msprof --output=./profile --application="python test_op.py"
+  profile_cmd: ""
+  timeout_s: 1800
+  repeats: 50
+  warmup: 10
+
+agent:
+  max_attempts: 3
+  max_sim_attempts: 2
+  llm:
+    enabled: false
+    base_url: ""
+    model: ""
+    api_key_env: AIOP_LLM_API_KEY
+    timeout_s: 120

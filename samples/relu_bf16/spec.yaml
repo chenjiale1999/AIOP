@@ -1,0 +1,39 @@
+{
+  "name": "relu",
+  "family": "elementwise_unary",
+  "formula": "Y = max(X, 0)",
+  "inputs": [
+    {
+      "name": "X",
+      "shape": [
+        1024,
+        4096
+      ],
+      "dtype": "bfloat16"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "Y",
+      "shape": [
+        1024,
+        4096
+      ],
+      "dtype": "bfloat16"
+    }
+  ],
+  "precision": {
+    "atol": 0.01,
+    "rtol": 0.01,
+    "max_abs_error": 0.1,
+    "matched_ratio": 0.999
+  },
+  "perf": {
+    "metric": "latency",
+    "target": null,
+    "unit": "ms"
+  },
+  "attrs": {},
+  "notes": "",
+  "version": "1"
+}

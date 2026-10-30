@@ -1,0 +1,146 @@
+# asc-search dryrun 查询清单（c_api 全量 × 3510/A3 × CANN 9.2.0）。
+# 每条用例验证一个能力面；前 19 条为试点基线，后 10 条为全量轮新增
+# （reg_compute/sync/atomic/deprecated/defs 维度）。
+# args 键与 query.py 参数一一对应；arch 选构建实例（arch3510=默认提交实例）。
+
+cases:
+  - name: 3510 搬入阶段
+    args: {stage: in}
+    min: 3
+    contains: [asc_copy_gm2ub]
+
+  - name: 3510 搬出阶段
+    args: {stage: out}
+    min: 2
+    contains: [asc_copy_ub2gm]
+
+  - name: 3510 非对齐搬运
+    args: {kw: 非对齐}
+    min: 2
+    contains: [asc_copy_gm2ub_align]
+
+  - name: 3510 对齐搬运 trait
+    args: {operation: copy, kw: 对齐}
+    min: 2
+
+  - name: 3510 api_class 分类
+    args: {api_class: vector_datamove}
+    min: 10
+
+  - name: 3510 参数反查（枚举类型形参）
+    args: {param: asc_load_l2_cache_mode}
+    min: 2
+    contains: [asc_copy_gm2ub_align, asc_ndim_copy_gm2ub]
+
+  - name: 3510 参数反查（参数名）
+    args: {param: pad_value}
+    min: 2
+    contains: [asc_set_copy_pad_val, asc_set_ndim_pad_value]
+
+  - name: 枚举值目录反查
+    args: {enum: asc_load_l2_cache_mode}
+    min: 1
+    contains: [enum.h, NORMAL_PERSISTENT]
+
+  - name: 3510 反向配置依赖
+    args: {deps_of: asc_copy_gm2ub_align, kind: configures, reverse: true}
+    min: 1
+    contains: [asc_set_copy_pad_val]
+
+  - name: 3510 家族卡
+    args: {api: asc_copy_gm2ub}
+    min: 2
+    contains: [asc_copy_gm2ub_arch_3510]
+
+  - name: 3510 dtype 过滤
+    args: {dtype: half, stage: in}
+    min: 1
+
+  - name: 3510 版本视图
+    args: {version: ">=9.1.0"}
+    min: 2
+    contains: [asc_set_copy_pad_val]
+
+  - name: 3510 产品视图
+    args: {product: "950", stage: in}
+    min: 3
+
+  - name: A3 低精度特性
+    arch: a3
+    args: {feature: low_precision}
+    min: 2
+    contains: [asc_copy_gm2ub_align]
+
+  - name: A3 低精度搬运
+    arch: a3
+    args: {feature: low_precision, stage: in}
+    min: 2
+    contains: [asc_copy_gm2ub_align]
+
+  - name: A3 转换对 half->int4
+    arch: a3
+    args: {convert: [half, int4]}
+    min: 1
+    contains: [asc_half2int4]
+
+  - name: A3 掩码计算（推导维度）
+    arch: a3
+    args: {operation: add}
+    min: 1
+    contains: [asc_add]
+
+  - name: 缺口登记（可选台账，允许为空）
+    args: {gap: compare}
+    min: 0
+
+  # ---- 全量轮新增 ----
+
+  - name: 全量 寄存器计算搬入
+    args: {operation: load, api_class: reg_compute}
+    min: 5
+    contains: [asc_load]
+
+  - name: 全量 同步操作
+    args: {operation: synchronization}
+    min: 8
+    contains: [asc_sync_wait]
+
+  - name: 全量 原子分类
+    args: {category: atomic, kw: 原子}
+    min: 3
+    contains: [asc_atomic_add]
+
+  - name: 全量 废弃接口替代目标
+    args: {deps_of: asc_uint162uint8_deprecated, kind: replaced_by}
+    min: 1
+    contains: [reg_convert/asc_uint162uint8.md]
+
+  - name: 全量 家族卡含废弃成员
+    args: {api: asc_copy_gm2ub_align}
+    min: 3
+    contains: [deprecated_interface/asc_copy_gm2ub_align_arch_3510_deprecated.md]
+
+  - name: 全量 参数反查（新枚举形参）
+    args: {param: pad_mode}
+    min: 2
+    contains: [asc_channel_pad_mode]
+
+  - name: 全量 枚举目录（defs）
+    args: {enum: asc_channel_pad_mode}
+    min: 1
+    contains: [EXPAND_16B]
+
+  - name: 全量 矩阵乘累加
+    args: {operation: matrix_multiply_accumulate}
+    min: 3
+    contains: [asc_mmad]
+
+  - name: 全量 归约操作
+    args: {operation: reduction, api_class: reg_compute}
+    min: 3
+    contains: [asc_reduce]
+
+  - name: 全量 概念页检索
+    args: {kw: 分形}
+    min: 2
+    contains: [fractal]

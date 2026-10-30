@@ -1,0 +1,55 @@
+{
+  "name": "layernorm",
+  "family": "layernorm",
+  "formula": "y = (x - mean) / sqrt(var + eps) * w + b",
+  "inputs": [
+    {
+      "name": "X",
+      "shape": [
+        128,
+        1000
+      ],
+      "dtype": "float32"
+    },
+    {
+      "name": "W",
+      "shape": [
+        1000
+      ],
+      "dtype": "float32"
+    },
+    {
+      "name": "B",
+      "shape": [
+        1000
+      ],
+      "dtype": "float32"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "Y",
+      "shape": [
+        128,
+        1000
+      ],
+      "dtype": "float32"
+    }
+  ],
+  "precision": {
+    "atol": 1e-05,
+    "rtol": 1e-05,
+    "max_abs_error": 0.0001,
+    "matched_ratio": 0.9999
+  },
+  "perf": {
+    "metric": "latency",
+    "target": null,
+    "unit": "ms"
+  },
+  "attrs": {
+    "eps": 1e-06
+  },
+  "notes": "",
+  "version": "1"
+}

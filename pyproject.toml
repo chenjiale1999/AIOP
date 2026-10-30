@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aiop"
+version = "0.1.0"
+description = "Ascend A5 (dav-3510) TileLang operator generation agent"
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6.0"]
+
+[project.scripts]
+aiop = "aiop.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["aiop*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: end-to-end tests that invoke the A5 device compiler"]

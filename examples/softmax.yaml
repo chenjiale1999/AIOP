@@ -1,0 +1,10 @@
+name: softmax
+family: softmax
+formula: "softmax(x) = exp(x - max(x)) / sum(exp(x - max(x)))"
+inputs:
+  - {name: X, shape: [128, 1000], dtype: float32}
+outputs:
+  - {name: Y, shape: [128, 1000], dtype: float32}
+precision: {atol: 1.0e-5, rtol: 1.0e-5, max_abs_error: 1.0e-4, matched_ratio: 0.9999}
+perf: {metric: latency, target: null, unit: ms}
+attrs: {}

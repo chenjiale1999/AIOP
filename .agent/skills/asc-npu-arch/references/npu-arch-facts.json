@@ -1,0 +1,398 @@
+{
+  "version": 2,
+  "source": "asc-npu-arch/references/npu-arch-guide.md",
+  "dtype_source": "docs/zh/api/context/内置数据类型.md",
+  "chips": {
+    "ascend910": {
+      "enum_name": "ASCEND910",
+      "npu_arch": "1001",
+      "soc_version": "ASCEND910",
+      "arch_dir": "ascendc_case_ascend910"
+    },
+    "ascend910b1": {
+      "enum_name": "ASCEND910B1",
+      "npu_arch": "2201",
+      "soc_version": "ASCEND910B",
+      "arch_dir": "ascendc_case_ascend910b1"
+    },
+    "ascend310p": {
+      "enum_name": "ASCEND310P",
+      "npu_arch": "2002",
+      "soc_version": "ASCEND310P",
+      "arch_dir": "ascendc_case_ascend310p"
+    },
+    "ascend610": {
+      "enum_name": "ASCEND610",
+      "npu_arch": "2002",
+      "soc_version": "ASCEND310P",
+      "arch_dir": "ascendc_case_ascend610"
+    },
+    "ascend310b1": {
+      "enum_name": "ASCEND310B1",
+      "npu_arch": "3002",
+      "soc_version": "ASCEND310B",
+      "arch_dir": "ascendc_case_ascend310b1"
+    },
+    "ascend950pr_9599": {
+      "enum_name": "ASCEND950PR_9599",
+      "npu_arch": "3510",
+      "soc_version": "ASCEND950",
+      "arch_dir": "ascendc_case_ascend950pr_9599"
+    }
+  },
+  "dtype_shorthands": {
+    "S4": {
+      "type": "int4b_t",
+      "storage_type": "int4x2_t"
+    },
+    "U8": {
+      "type": "uint8_t"
+    },
+    "S8": {
+      "type": "int8_t"
+    },
+    "U16": {
+      "type": "uint16_t"
+    },
+    "S16": {
+      "type": "int16_t"
+    },
+    "U32": {
+      "type": "uint32_t"
+    },
+    "S32": {
+      "type": "int32_t"
+    },
+    "U64": {
+      "type": "uint64_t"
+    },
+    "S64": {
+      "type": "int64_t"
+    },
+    "FP8_E4M3": {
+      "type": "fp8_e4m3fn_t"
+    },
+    "HiF8": {
+      "type": "hifloat8_t"
+    },
+    "FP16": {
+      "type": "half"
+    },
+    "BF16": {
+      "type": "bfloat16_t"
+    },
+    "FP32": {
+      "type": "float"
+    }
+  },
+  "dtype_product_support": {
+    "ascend950": {
+      "products": [
+        "Ascend 950PR",
+        "Ascend 950DT"
+      ],
+      "dtypes": [
+        "bool",
+        "int8_t",
+        "uint8_t",
+        "fp4x2_e2m1_t",
+        "fp4x2_e1m2_t",
+        "hifloat8_t",
+        "fp8_e5m2_t",
+        "fp8_e4m3fn_t",
+        "fp8_e8m0_t",
+        "int4x2_t",
+        "int16_t",
+        "uint16_t",
+        "half",
+        "bfloat16_t",
+        "int32_t",
+        "uint32_t",
+        "float",
+        "complex32",
+        "int64_t",
+        "uint64_t",
+        "double",
+        "complex64"
+      ]
+    },
+    "atlas_a2_a3": {
+      "products": [
+        "Atlas A2 training/inference",
+        "Atlas A3 training/inference"
+      ],
+      "dtypes": [
+        "int8_t",
+        "uint8_t",
+        "int16_t",
+        "uint16_t",
+        "int32_t",
+        "uint32_t",
+        "int64_t",
+        "uint64_t",
+        "half",
+        "bfloat16_t",
+        "float",
+        "double"
+      ]
+    }
+  },
+  "dtypes": {
+    "bool": {
+      "cpp_type": "bool",
+      "category": "bool",
+      "bit_width": 8,
+      "size": 1,
+      "align32_elements": 32,
+      "immediate_assignable": true,
+      "generic_ut_generation": true,
+      "range": "false when all bits are 0; true otherwise"
+    },
+    "int8_t": {
+      "cpp_type": "int8_t",
+      "category": "signed_integer",
+      "bit_width": 8,
+      "size": 1,
+      "align32_elements": 32,
+      "immediate_assignable": true,
+      "generic_ut_generation": true,
+      "range": "[-128, 127]"
+    },
+    "uint8_t": {
+      "cpp_type": "uint8_t",
+      "category": "unsigned_integer",
+      "bit_width": 8,
+      "size": 1,
+      "align32_elements": 32,
+      "immediate_assignable": true,
+      "generic_ut_generation": true,
+      "range": "[0, 255]"
+    },
+    "fp4x2_e2m1_t": {
+      "cpp_type": "fp4x2_e2m1_t",
+      "category": "packed_float",
+      "bit_width": 8,
+      "size": 1,
+      "align32_elements": 32,
+      "lanes": 2,
+      "lane_bit_width": 4,
+      "sign_bits": 1,
+      "exponent_bits": 2,
+      "mantissa_bits": 1,
+      "immediate_assignable": false,
+      "generic_ut_generation": false,
+      "range": "[-6, 6]"
+    },
+    "fp4x2_e1m2_t": {
+      "cpp_type": "fp4x2_e1m2_t",
+      "category": "packed_float",
+      "bit_width": 8,
+      "size": 1,
+      "align32_elements": 32,
+      "lanes": 2,
+      "lane_bit_width": 4,
+      "sign_bits": 1,
+      "exponent_bits": 1,
+      "mantissa_bits": 2,
+      "immediate_assignable": false,
+      "generic_ut_generation": false,
+      "range": "[-7 * 2^-2, 7 * 2^-2]"
+    },
+    "hifloat8_t": {
+      "cpp_type": "hifloat8_t",
+      "category": "float",
+      "bit_width": 8,
+      "size": 1,
+      "align32_elements": 32,
+      "sign_bits": 1,
+      "immediate_assignable": false,
+      "generic_ut_generation": false,
+      "range": "depends on D field"
+    },
+    "fp8_e5m2_t": {
+      "cpp_type": "fp8_e5m2_t",
+      "category": "float",
+      "bit_width": 8,
+      "size": 1,
+      "align32_elements": 32,
+      "sign_bits": 1,
+      "exponent_bits": 5,
+      "mantissa_bits": 2,
+      "immediate_assignable": false,
+      "generic_ut_generation": false,
+      "range": "[2^13 - 2^16, 2^16 - 2^13]"
+    },
+    "fp8_e4m3fn_t": {
+      "cpp_type": "fp8_e4m3fn_t",
+      "category": "float",
+      "bit_width": 8,
+      "size": 1,
+      "align32_elements": 32,
+      "sign_bits": 1,
+      "exponent_bits": 4,
+      "mantissa_bits": 3,
+      "immediate_assignable": false,
+      "generic_ut_generation": false,
+      "range": "[2^6 - 2^9, 2^9 - 2^6]"
+    },
+    "fp8_e8m0_t": {
+      "cpp_type": "fp8_e8m0_t",
+      "category": "float",
+      "bit_width": 8,
+      "size": 1,
+      "align32_elements": 32,
+      "sign_bits": 1,
+      "exponent_bits": 8,
+      "mantissa_bits": 0,
+      "immediate_assignable": false,
+      "generic_ut_generation": false,
+      "range": "[2^-127, 2^-127]"
+    },
+    "int4x2_t": {
+      "cpp_type": "int4x2_t",
+      "category": "packed_signed_integer",
+      "bit_width": 8,
+      "size": 1,
+      "align32_elements": 32,
+      "lanes": 2,
+      "lane_bit_width": 4,
+      "immediate_assignable": false,
+      "generic_ut_generation": false,
+      "range": "[-8, 7] per 4-bit lane"
+    },
+    "int16_t": {
+      "cpp_type": "int16_t",
+      "category": "signed_integer",
+      "bit_width": 16,
+      "size": 2,
+      "align32_elements": 16,
+      "immediate_assignable": true,
+      "generic_ut_generation": true,
+      "range": "[-32768, 32767]"
+    },
+    "uint16_t": {
+      "cpp_type": "uint16_t",
+      "category": "unsigned_integer",
+      "bit_width": 16,
+      "size": 2,
+      "align32_elements": 16,
+      "immediate_assignable": true,
+      "generic_ut_generation": true,
+      "range": "[0, 65535]"
+    },
+    "half": {
+      "cpp_type": "half",
+      "category": "float",
+      "bit_width": 16,
+      "size": 2,
+      "align32_elements": 16,
+      "sign_bits": 1,
+      "exponent_bits": 5,
+      "mantissa_bits": 10,
+      "immediate_assignable": true,
+      "generic_ut_generation": true,
+      "range": "[2^5 - 2^16, 2^16 - 2^5]"
+    },
+    "bfloat16_t": {
+      "cpp_type": "bfloat16_t",
+      "category": "float",
+      "bit_width": 16,
+      "size": 2,
+      "align32_elements": 16,
+      "sign_bits": 1,
+      "exponent_bits": 8,
+      "mantissa_bits": 7,
+      "immediate_assignable": false,
+      "generic_ut_generation": false,
+      "range": "[2^120 - 2^128, 2^128 - 2^120]"
+    },
+    "int32_t": {
+      "cpp_type": "int32_t",
+      "category": "signed_integer",
+      "bit_width": 32,
+      "size": 4,
+      "align32_elements": 8,
+      "immediate_assignable": true,
+      "generic_ut_generation": true,
+      "range": "[-2147483648, 2147483647]"
+    },
+    "uint32_t": {
+      "cpp_type": "uint32_t",
+      "category": "unsigned_integer",
+      "bit_width": 32,
+      "size": 4,
+      "align32_elements": 8,
+      "immediate_assignable": true,
+      "generic_ut_generation": true,
+      "range": "[0, 4294967295]"
+    },
+    "float": {
+      "cpp_type": "float",
+      "category": "float",
+      "bit_width": 32,
+      "size": 4,
+      "align32_elements": 8,
+      "sign_bits": 1,
+      "exponent_bits": 8,
+      "mantissa_bits": 23,
+      "immediate_assignable": true,
+      "generic_ut_generation": true,
+      "range": "[2^104 - 2^128, 2^128 - 2^104]"
+    },
+    "complex32": {
+      "cpp_type": "complex32",
+      "category": "complex",
+      "bit_width": 32,
+      "size": 4,
+      "align32_elements": 8,
+      "component_type": "half",
+      "immediate_assignable": false,
+      "generic_ut_generation": false,
+      "support_note": "complex32 is AscendC::Complex<half>; confirm product support against target API and current local docs before generating UT."
+    },
+    "int64_t": {
+      "cpp_type": "int64_t",
+      "category": "signed_integer",
+      "bit_width": 64,
+      "size": 8,
+      "align32_elements": 4,
+      "immediate_assignable": true,
+      "generic_ut_generation": true,
+      "range": "[-9223372036854775808, 9223372036854775807]"
+    },
+    "uint64_t": {
+      "cpp_type": "uint64_t",
+      "category": "unsigned_integer",
+      "bit_width": 64,
+      "size": 8,
+      "align32_elements": 4,
+      "immediate_assignable": true,
+      "generic_ut_generation": true,
+      "range": "[0, 18446744073709551615]"
+    },
+    "double": {
+      "cpp_type": "double",
+      "category": "float",
+      "bit_width": 64,
+      "size": 8,
+      "align32_elements": 4,
+      "sign_bits": 1,
+      "exponent_bits": 11,
+      "mantissa_bits": 52,
+      "immediate_assignable": false,
+      "generic_ut_generation": false,
+      "range": "[2^971 - 2^1024, 2^1024 - 2^971]"
+    },
+    "complex64": {
+      "cpp_type": "complex64",
+      "category": "complex",
+      "bit_width": 64,
+      "size": 8,
+      "align32_elements": 4,
+      "component_type": "float",
+      "immediate_assignable": false,
+      "generic_ut_generation": false,
+      "support_note": "complex64 is AscendC::Complex<float>; confirm product support against target API and current local docs before generating UT."
+    }
+  }
+}

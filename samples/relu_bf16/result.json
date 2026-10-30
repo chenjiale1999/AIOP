@@ -1,0 +1,203 @@
+{
+  "task_id": "sample-relu_bf16",
+  "status": "success_static_only",
+  "verified": false,
+  "simulation_requested": false,
+  "generator": "template",
+  "spec": {
+    "name": "relu",
+    "family": "elementwise_unary",
+    "formula": "Y = max(X, 0)",
+    "inputs": [
+      {
+        "name": "X",
+        "shape": [
+          1024,
+          4096
+        ],
+        "dtype": "bfloat16"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "Y",
+        "shape": [
+          1024,
+          4096
+        ],
+        "dtype": "bfloat16"
+      }
+    ],
+    "precision": {
+      "atol": 0.01,
+      "rtol": 0.01,
+      "max_abs_error": 0.1,
+      "matched_ratio": 0.999
+    },
+    "perf": {
+      "metric": "latency",
+      "target": null,
+      "unit": "ms"
+    },
+    "attrs": {},
+    "notes": "",
+    "version": "1"
+  },
+  "plan": {
+    "family": "elementwise_unary",
+    "variant": "simt_ub_staged",
+    "blocks": 64,
+    "tile": 8192,
+    "rows": 0,
+    "threads": 256,
+    "tile_extent": 0,
+    "num_stages": 2,
+    "iterations": 8,
+    "block_m": 0,
+    "block_n": 0,
+    "block_k": 0,
+    "epilogue": "none",
+    "tail_mode": "exact",
+    "buffer_bytes": {
+      "tile0": 32768,
+      "tile1": 32768
+    }
+  },
+  "roofline": {
+    "bytes": 16777216,
+    "flops": 8388608,
+    "arithmetic_intensity": 0.5,
+    "bottleneck": "memory"
+  },
+  "static": {
+    "stage": "static",
+    "ok": true,
+    "findings": [],
+    "metadata": {
+      "syntax": {
+        "stage": "syntax",
+        "ok": true,
+        "findings": [],
+        "metadata": {
+          "lines": 38
+        }
+      },
+      "api": {
+        "stage": "api",
+        "ok": true,
+        "findings": [],
+        "metadata": {}
+      },
+      "constraints": {
+        "stage": "constraints",
+        "ok": true,
+        "findings": [],
+        "metadata": {}
+      },
+      "semantics": {
+        "stage": "semantics",
+        "ok": true,
+        "findings": [],
+        "metadata": {}
+      }
+    }
+  },
+  "compile": {
+    "ok": true,
+    "source_path": "/home/cjl/workspace/aiop/workspace/sample-relu_bf16/compile_result.cce.c",
+    "error": "",
+    "category": "none",
+    "hint": "",
+    "audit": {
+      "chars": 3180,
+      "notify": 8,
+      "wait": 8,
+      "vf_calls": 1,
+      "dma_copies": 2,
+      "scalar_global_refs": 2,
+      "has_printf": false,
+      "balanced_sync": true
+    },
+    "elapsed_s": 1.96
+  },
+  "simulation": null,
+  "board": null,
+  "attempts": [
+    {
+      "attempt": 1,
+      "stage": "compile",
+      "ok": true,
+      "error": "",
+      "category": "none",
+      "generator": "template"
+    }
+  ],
+  "knowledge": [
+    {
+      "score": 21.3792,
+      "doc": ".opencode/agents/aiop-op-orchestrator.md",
+      "title": "aiop-op-orchestrator",
+      "heading": "aiop-op-orchestrator / 门禁校验（你亲自执行）",
+      "text": "| Stage | 校验命令 | 通过标准 |\n|---|---|---|\n| 1 | 读 DESIGN.md | 含概述/模式/API/Tiling/内存/循环/同步/验证/精度/风险/引用，无 TODO |\n| 2 | `python -m aiop check <task>` | static ok |\n| 3 | 同上 | 无 error |\n| 4 | 读 `compile_result.json` | `ok=true`，CCE 源码存在 |\n| 5 | 读 `simulation_report.json` | `passed` 或 `unavailable`（后者降级） |\n| 6 | 读 `board_report.json` | `passed`，精度与性能达标 |\n\n门禁失败：`fail_stage(N)` → 检查上限 → `start_stage(N)` → 重新调度；禁止跳过。\n\n---"
+    },
+    {
+      "score": 20.4558,
+      "doc": ".agent/skills/aiop-op-pipeline/SKILL.md",
+      "title": "SKILL",
+      "heading": "SKILL / 3. 设计阶段（必须产出 DESIGN.md）",
+      "text": "按顺序：\n\n1. **瓶颈分类**：算 Bytes/FLOPs，判定 memory/compute/latency bound（`knowledge/06` §1）。\n2. **骨架选型**：`knowledge/04` 模式 A–F；记录参考示例路径。\n3. **容量预算**：UB 208KB / L1 512KB / L0C 256KB / L0A/B 64KB；含 buffer 版本与 padding。\n4. **核与并行度**：Vector 64 block，Cube 32 block；`T.Kernel` 一维；线程域只在 `T.SimtVF`。\n5. **尾部策略**：整 tile 整除 → UB-staged；否则 guarded 标量路径并标注性能风险。\n6. **验证方案**：golden、dtype 精度标准、L0–L4 门禁。\n\nDESIGN.md 必须包含：概述、编程模式、API 映射、Tiling、内存层级、循环/调度、同步、\n验证方案、精度标准、风险点、知识引用。"
+    },
+    {
+      "score": 19.2275,
+      "doc": ".opencode/agents/aiop-op-designer.md",
+      "title": "aiop-op-designer",
+      "heading": "aiop-op-designer / 必做步骤",
+      "text": "1. **知识召回**：`python -m aiop search \"<family> <op> tiling 内存 精度\"`，至少引用 2 条\n   （`knowledge/04` 骨架、`knowledge/06` 性能规则）。\n2. **规格校验**：\n   - dtype 在 A5 支持集合（`knowledge/01` §5）。\n   - `gemm`：A[M,K]、B[N,K]、C[M,N] float32；`row_reduce`：输出去掉最后一维。\n   - shape 全静态正整数；动态轴需先特化。\n3. **瓶颈分类**：算 Bytes/FLOPs，判定 memory/compute/latency bound。\n4. **骨架选型**：A elementwise / B row-reduce / C GEMM / D split-K / E attention / F quant。\n5. **容量预算**（必须写进 DESIGN.md）：\n   - UB 208 KB（物理 248 KB，SIMT 预留 32 KB）\n   - L1 512 KB、L0C 256 KB、L0A/L0B 64 KB\n   - 预算含 buffer 版本数与 layout padding\n6. **Tiling/并行度**：\n   - Vector 64 block，Cube 32 block；一维 grid；线程域只在 `T.SimtVF`。\n   - 整 tile 整除 → UB-staged；不整除 → guarded 标量路径并标注带宽风险。\n   - GEMM block 必须整除 M/N/K，且 L0C/L1 预算内。\n7. **同步策略**：自动调度；若需手动同步，必须整体引用一个官方示例，不允许半自动混搭。\n8. **验证方案**：golden（PyTorch）、L0–L4 门禁、精度标准（按 dtype）。\n9. **风险点**：三维 Kernel、threads>2、动态边界、L0C 溢出、GEMM 非整除、尾部、\n   reducer 生命周期、调试插桩。"
+    },
+    {
+      "score": 18.2769,
+      "doc": ".opencode/agents/README.md",
+      "title": "README",
+      "heading": "README / 使用示例",
+      "text": "```text\n@aiop-op-orchestrator 生成一个 softmax 算子，输入 [128, 1000] float32，\n沿最后一维归一化，精度 1e-5，先在本机编译+仿真，仿真通过后提交到 A5 服务器实测。\n```\n\nOrchestrator 会先补齐缺失字段（算子名、公式、I/O、精度、性能目标、是否上板），\n再按 Stage 1–6 推进；中断后用同一 task_id 续跑。"
+    },
+    {
+      "score": 17.8204,
+      "doc": ".opencode/agents/aiop-op-tuner.md",
+      "title": "aiop-op-tuner",
+      "heading": "aiop-op-tuner / 反模式",
+      "text": "- 用 `T.annotate_unlimit_memory` 掩盖超容量。\n- 为追求性能删掉 tail guard 或精度补偿。\n- 在调试插桩（printf/dump）存在时测性能。\n- 比较不同输入/频率/缓存状态下的数据。\n- 只报单次最优值，不报中位数/P90。"
+    }
+  ],
+  "artifacts": {
+    "design": "/home/cjl/workspace/aiop/workspace/sample-relu_bf16/DESIGN.md",
+    "spec": "/home/cjl/workspace/aiop/workspace/sample-relu_bf16/spec.yaml",
+    "kernel": "/home/cjl/workspace/aiop/workspace/sample-relu_bf16/relu.py",
+    "test": "/home/cjl/workspace/aiop/workspace/sample-relu_bf16/test_relu.py",
+    "compile_report": "/home/cjl/workspace/aiop/workspace/sample-relu_bf16/compile_result.json"
+  },
+  "environment": {
+    "cann_home": "/usr/local/Ascend/cann-9.2.0",
+    "cann_exists": true,
+    "bisheng": "/usr/local/Ascend/cann-9.2.0/bin/bisheng",
+    "bisheng_exists": true,
+    "npusim": "/usr/local/Ascend/cann-9.2.0/x86_64-linux/bin/npusim",
+    "npusim_exists": true,
+    "torch_npu": false,
+    "npu_device": false,
+    "tilelang_repo": "/home/cjl/workspace/tilelang",
+    "tilelang_native": true,
+    "compile_ok": null,
+    "notes": [
+      "torch_npu unavailable: ModuleNotFoundError"
+    ],
+    "torch": "2.14.0+cu130",
+    "torch_cuda": false,
+    "tilelang_version": "0.1.15+cuda.git6d46c9bf",
+    "dev_davinci": []
+  },
+  "elapsed_s": 1.98,
+  "notes": [
+    "L1/L2 verified: lowering + bisheng device compile passed (2.0s)."
+  ]
+}

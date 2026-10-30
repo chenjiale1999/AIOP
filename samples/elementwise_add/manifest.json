@@ -1,0 +1,76 @@
+{
+  "task_id": "sample-elementwise_add",
+  "spec": {
+    "name": "add",
+    "family": "elementwise_binary",
+    "formula": "C = A + B",
+    "inputs": [
+      {
+        "name": "A",
+        "shape": [
+          1048576
+        ],
+        "dtype": "float32"
+      },
+      {
+        "name": "B",
+        "shape": [
+          1048576
+        ],
+        "dtype": "float32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "C",
+        "shape": [
+          1048576
+        ],
+        "dtype": "float32"
+      }
+    ],
+    "precision": {
+      "atol": 1e-05,
+      "rtol": 1e-05,
+      "max_abs_error": 0.0001,
+      "matched_ratio": 0.9999
+    },
+    "perf": {
+      "metric": "latency",
+      "target": null,
+      "unit": "ms"
+    },
+    "attrs": {},
+    "notes": "",
+    "version": "1"
+  },
+  "plan": {
+    "family": "elementwise_binary",
+    "variant": "simt_ub_staged",
+    "blocks": 64,
+    "tile": 4096,
+    "rows": 0,
+    "threads": 256,
+    "tile_extent": 0,
+    "num_stages": 2,
+    "iterations": 4,
+    "block_m": 0,
+    "block_n": 0,
+    "block_k": 0,
+    "epilogue": "none",
+    "tail_mode": "exact",
+    "buffer_bytes": {
+      "tile0": 32768,
+      "tile1": 32768,
+      "tile2": 32768
+    }
+  },
+  "generator": "template",
+  "tilelang_repo": "/home/cjl/workspace/tilelang",
+  "cann_home": "/usr/local/Ascend/cann-9.2.0",
+  "device_flags": [
+    "-D__INTEL_LLVM_COMPILER=1",
+    "-DSYCL_LANGUAGE_VERSION=1"
+  ],
+  "created_at": "2026-10-29T22:15:32"
+}
