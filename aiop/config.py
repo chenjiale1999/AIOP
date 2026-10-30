@@ -23,6 +23,7 @@ class Paths:
     knowledge: str = str(PROJECT_ROOT / "knowledge")
     samples: str = str(PROJECT_ROOT / "samples")
     reports: str = str(PROJECT_ROOT / "reports")
+    tileops_manifest: str = "/home/cjl/workspace/TileOPs/src/tileops/manifest/spec"
 
 
 @dataclass
@@ -149,6 +150,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         "AIOP_WORKSPACE": (cfg.paths, "workspace"),
         "AIOP_CANN_HOME": (cfg.cann, "home"),
         "AIOP_NPUSIM": (cfg.cann, "npusim"),
+        "AIOP_TILEOPS_MANIFEST": (cfg.paths, "tileops_manifest"),
         "AIOP_SOC_VERSION": (cfg.cann, "soc_version"),
         "AIOP_BOARD_HOST": (cfg.board, "host"),
         "AIOP_BOARD_KEY": (cfg.board, "key"),

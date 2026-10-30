@@ -31,8 +31,8 @@ description: "昇腾 A5（Ascend 950 / dav-3510）+ TileLang 算子端到端生�
 ## 1. 流水线总览
 
 ```text
-需求 (自然语言 / TaskSpec)
-  ↓  aiop generate --spec / --requirement
+需求 (自然语言 / TaskSpec / TileOPs manifest)
+  ↓  aiop generate --spec / --requirement / --op <ManifestOp> --workload N
 Stage 1 Design        规格校验 + 硬件预算 + 知识召回 → DESIGN.md
 Stage 2 Generate      模板/LLM 生成 → {op}.py + test_{op}.py
 Stage 3 Static        AST / API 白名单 / 约束 / 语义 → static_report.json
@@ -44,6 +44,37 @@ Stage 7 Report        report.md / result.json / manifest.json
 
 门禁：Stage 3/4 必须通过才能算“生成成功”；Stage 5 通过才算“验证通过”；
 Stage 6 只在配置了远端主机时执行。
+
+### 输入来自 TileOPs manifest 时
+
+```bash
+python -m aiop manifest list                       # 条目 + aiop family 映射
+python -m aiop manifest show MLAPagedFwdOp         # 签名与所有 workload 行
+python -m aiop manifest convert RMSNormFwdOp --workload 0 --dtype-case 1 --out spec.yaml
+python -m aiop generate --op GemmFwdOp --workload 1 --dtype-case 0
+```
+
+- 契约（`forall`/`params`/`optional`/`values`/`requires`/`mutated`/`let`/
+  `shape_rules`/type family/`dtype_cases`）按 manifest 语义绑定，规则见
+  `knowledge/10-manifest-spec.md`。
+- 能映射到模板 family 的条目正常走 Stage 1–7。
+- 不能映射的条目（attention/MoE/conv/...）在 Stage 1 抛 `UnsupportedOperator`：
+  - **未配置 LLM** → 返回 `blocked_unsupported`，只写 `DESIGN.md`（契约表 + 元数据张量 +
+    不支持原因 + 补齐路径），**不生成 kernel、不报任何测量值**；
+  - **已配置 LLM** → 进入 open 模式（`Plan.variant="llm_open"`）：LLM 起草 kernel，
+    tiling/UB 不做断言，但 L0–L2 门禁一条不放松；编译/静态失败带错误回到
+    `repair_kernel` 循环；golden 若也由 LLM 提供则标记 `llm-self-referenced`，
+    `verified` 恒为 `False`，状态最高 `success_static_only`。
+
+```bash
+export AIOP_LLM_BASE_URL=https://api.deepseek.com/v1
+export AIOP_LLM_MODEL=<model id>
+export AIOP_LLM_API_KEY=<key>
+python -m aiop generate --op GQADenseFwdOp --workload 0
+```
+
+`--strategy auto`（默认）只对**没有模板**的 family 用 LLM；已有模板的仍走确定性模板。
+**严禁**把 open 模式的自指 golden 当作独立验证证据。
 
 ## 2. 输入契约（TaskSpec）
 

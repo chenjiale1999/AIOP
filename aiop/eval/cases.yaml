@@ -122,3 +122,16 @@ cases:
     family: gemm
     inputs: [{name: A, shape: [128, 256], dtype: float16}, {name: B, shape: [256, 256], dtype: float16}]
     outputs: [{name: C, shape: [128, 256], dtype: float32}]
+
+  # ---- TileOPs manifest entries (src/tileops/manifest/spec/*.yaml) ----
+  # Same pipeline, but the contract is bound from the manifest instead of a
+  # hand-written TaskSpec. `workload` is a row index (or a row `label`) and
+  # `dtype_case` indexes that row's `dtype_cases`.
+  - {op: ReluFwdOp, workload: 0, dtype_case: 0}
+  - {op: SigmoidFwdOp, workload: 0, dtype_case: 0}
+  - {op: AddFwdOp, workload: 0, dtype_case: 0}
+  - {op: SumFwdOp, workload: 0, dtype_case: 0}
+  - {op: SoftmaxFwdOp, workload: 0, dtype_case: 0}
+  - {op: RMSNormFwdOp, workload: 0, dtype_case: 1}
+  - {op: LayerNormFwdOp, workload: 0, dtype_case: 0}
+  - {op: GemmFwdOp, workload: 1, dtype_case: 0}

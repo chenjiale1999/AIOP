@@ -27,13 +27,24 @@ python -m aiop generate --requirement "softmax on [128, 1000] float32"
 # 2. 用 TaskSpec 精确控制
 python -m aiop generate --spec examples/softmax.yaml
 
+# 2b. 直接用 TileOPs manifest 契约（src/tileops/manifest/spec/*.yaml）
+python -m aiop manifest list
+python -m aiop manifest show MLAPagedFwdOp
+python -m aiop generate --op RMSNormFwdOp --workload 0 --dtype-case 1
+
+# 2c. 没有模板的算子：配置 LLM 后走 open 模式（门禁不放松）
+export AIOP_LLM_BASE_URL=https://api.deepseek.com/v1
+export AIOP_LLM_MODEL=<model id>
+export AIOP_LLM_API_KEY=<key>
+python -m aiop generate --op GQADenseFwdOp --workload 0
+
 # 3. 已有任务重跑门禁
 python -m aiop check    workspace/<task>
 python -m aiop compile  workspace/<task>
 python -m aiop simulate workspace/<task>
 python -m aiop board    workspace/<task> --host user@a5-host
 
-# 4. 基准评测（28 个算子用例）
+# 4. 基准评测（36 个算子用例，含 8 个 manifest 绑定用例）
 python -m aiop eval --cases aiop/eval/cases.yaml
 
 # 5. HTTP 服务
@@ -75,9 +86,24 @@ aiop/
 | `softmax` | 数值稳定（max-shift） | 已验证编译 |
 | `rmsnorm` | 行级 reducer + 权重 | 已验证编译 |
 | `layernorm` | 双 reducer + weight/bias | 已验证编译 |
-| `gemm` / `gemm_relu` | 持久化 L1→L0C，可选 Cube→Vector epilogue | 已验证编译 |
+| `gemm` / `gemm_relu` | 持久化 L1→L0C，可选 Cube→Vector epilogue（含非 fp32 输出 cast） | 已验证编译 |
 
 不支持：动态 shape、attention（需专用模板）、非 A5 dtype、跨级 GM→L0。
+
+### TileOPs manifest 接入
+
+`src/tileops/manifest/spec/*.yaml` 的算子契约可以直接驱动本流程（详见
+[knowledge/10-manifest-spec.md](knowledge/10-manifest-spec.md)）：
+
+- `forall` 索引 / `params` / `optional` + `some` / `values` + `requires` /
+  `mutated` / `contiguous` / 多输出 / `let` / `shape_rules` / `dtype_cases` /
+  type family（`Mat[trans_b, K, N]`、`PoolOut[...]` 等）全部按 manifest 语义绑定；
+- 行里省略的维度按统一规则求解（`B = len(seq)`、`prefix_sum(seq)` → `len+1`、
+  `packed_positions/token_indices(seq)` → `sum(seq)`）；
+- 全量自检：2208 个 workload×dtype 组合中 2125 个可绑定，`attention.yaml`
+  235/235 绑定成功；
+- 有模板的 23 个条目直接生成；其余（attention/MoE/conv/pool/FFT/量化）返回
+  `blocked_unsupported` 并输出契约级 `DESIGN.md`，不生成假 kernel。
 
 ## 知识库
 
@@ -93,6 +119,7 @@ aiop/
 | [07 仿真与精度](knowledge/07-simulation-and-accuracy.md) | 五层验证、npusim、精度门限、失败分层 |
 | [08 上板](knowledge/08-board-deployment.md) | SSH 部署、指标、门禁、失败模式 |
 | [09 样例库](knowledge/09-verified-samples.md) | 已验证样例索引与验证状态 |
+| [10 manifest 规格](knowledge/10-manifest-spec.md) | TileOPs 契约绑定规则、可生成 family、`blocked_unsupported` |
 
 检索：`python -m aiop search "UB 容量 预算"`。索引自动构建到 `.index/knowledge.json`，
 按文件 mtime 失效；tokenizer 支持中文 bigram 与英文标识符。
@@ -101,9 +128,9 @@ aiop/
 
 | 层 | 内容 | 本机状态 |
 |---|---|---|
-| L0 | 语法/API/约束/语义 | ✅ 28/28 用例通过 |
-| L1 | `tilelang.lower` 出 CCE 源码 | ✅ 28/28 |
-| L2 | `bisheng --npu-arch=dav-3510` | ✅ 28/28 |
+| L0 | 语法/API/约束/语义 | ✅ 36/36 用例通过 |
+| L1 | `tilelang.lower` 出 CCE 源码 | ✅ 36/36 |
+| L2 | `bisheng --npu-arch=dav-3510` | ✅ 36/36 |
 | L3 | npusim / local NPU 数值验证 | ⚠️ 本机无匹配 torch_npu/NPU；自动探测并标记 `unavailable` |
 | L4 | 远端 A5 实测 | ⚪ 未配置 host；`board` 返回 `skipped` |
 
@@ -111,8 +138,9 @@ L3 需要 **与 CANN 版本匹配的 torch_npu**（例如 CANN 9.1 + torch_npu 2
 `/dev/davinci*`；`npusim` 只接受 `-s Ascend950`/`Ascend950DT`。缺少条件时系统不会伪造通过，
 而是在 `simulation_report.json` 与最终报告中披露缺口。
 
-基准结果：`reports/eval_final.json`，生成（静态+编译）通过率 **100%（28/28）**，
-总耗时 88.5s；每个用例的 `simulation.report` 均如实标记 `unavailable`。
+基准结果：`reports/eval_manifest.json`，生成（静态+编译）通过率 **100%（36/36）**，
+其中 8 个用例直接绑定自 TileOPs manifest；每个用例的 `simulation.report` 均如实标记
+`unavailable`。
 
 ## 配置
 
@@ -140,8 +168,23 @@ agent:
 
 ### LLM 模式
 
-默认使用**已验证模板**，无需网络。配置 OpenAI-compatible 端点后，可用
-`--strategy llm` 让模型起草/修复；所有候选仍必须通过 L0–L2 门禁，失败自动回退模板。
+默认使用**已验证模板**，无需网络。配置任意 OpenAI-compatible 端点（DeepSeek、vLLM、网关均可）后：
+
+- `--strategy auto`（默认）：**有模板的 family 仍走模板**，没模板的 family 自动走 LLM 开放模式；
+- `--strategy llm`：强制先让模型起草，失败再回退模板；
+- `--strategy template`：完全离线、确定性。
+
+LLM 只负责“写 kernel / 修 kernel”，不参与判定：静态、lowering、bisheng 设备编译、
+精度门禁全部照旧，任何候选不通过就带着错误回到修复循环（`agent.max_attempts` 轮）。
+
+开放模式的可信度边界：
+
+| 项 | 行为 |
+|---|---|
+| plan | `variant="llm_open"`，只固定 grid ≤ 64（Cube ≤ 32），tiling/UB 不做断言 |
+| golden | 有 `role=metadata` 输入时不生成（L3 = `unavailable`）；否则 LLM 写纯 torch 参考，标记 `llm-self-referenced` |
+| `verified` | 恒为 `False`：自指参考不算独立证据 |
+| 状态 | 最多 `success_static_only`（L0–L2 通过） |
 
 ## HTTP API
 
@@ -166,7 +209,7 @@ curl -s localhost:8790/v1/tasks -H 'Content-Type: application/json' \
 ## 测试
 
 ```bash
-python -m pytest -q                 # 42 个测试（含 golden 执行、修复循环、端到端编译）
+python -m pytest -q                 # 69 个测试（golden 执行、修复循环、manifest 绑定、open 模式、端到端编译）
 python -m pytest -q -m slow         # 仅端到端（会调用 bisheng）
 ```
 
@@ -194,19 +237,26 @@ Skill：[`.agent/skills/aiop-op-pipeline/SKILL.md`](.agent/skills/aiop-op-pipeli
 
 ## 已知限制
 
-1. 动态 shape / 多输出 / attention / 量化打包暂不在模板范围。
+1. 动态 shape / 多输出 kernel / attention 模板暂不在确定性生成范围；配置 LLM 后可走
+   open 模式起草（只保证 L0–L2，不保证数值正确）。
 2. L3 数值仿真依赖本机 torch_npu 与 CANN 的版本匹配；不匹配时只做 L1/L2。
 3. L4 需要用户提供可 SSH 的 A5 主机与一致的工具链。
 4. 性能目标未配置时只记录数据，不做绝对峰值利用率断言。
 5. `.runtime/` 是可选的本地 torch_npu 安装目录（探测用），已被 `.gitignore` 忽略，可安全删除。
+6. manifest 中依赖代数数据类型 type family 的条目（MoE 的 `layout`）和 `complex64/128`
+   （FFT）不绑定，会以 `BindError` 明确报出。
+7. open 模式的 golden 由 LLM 生成时属于自指参考，`verified` 恒为 `False`；要拿到独立
+   证据必须补 aiop 内置参考或上板实测。
 
 ## 验收对照
 
 | 要求 | 落地 |
 |---|---|
 | 复用参考 Skill / A3 Agent 逻辑 | `.opencode/agents/` 6 个 A5 Agent；`.agent/skills/` 8 个 skill（含 `aiop-op-pipeline`） |
-| A5 知识库 | `knowledge/01–09`，覆盖语法/硬件/性能/样例/仿真/上板；BM25 实时检索 |
-| 端到端生成 | 7 个家族、28 个 benchmark 用例，静态+编译 100% |
+| A5 知识库 | `knowledge/01–10`，覆盖语法/硬件/性能/样例/仿真/上板/契约；BM25 实时检索 |
+| 端到端生成 | 7 个家族、36 个 benchmark 用例（含 8 个 manifest 绑定用例），静态+编译 100% |
+| 规格输入 | TaskSpec YAML/JSON、自然语言、TileOPs manifest（`--op/--workload/--dtype-case`） |
+| LLM 能力 | OpenAI 兼容端点：无模板 family 的 open 模式起草 + 编译失败 repair 循环 |
 | 错误自修正 | 静态/编译分类 + 保守 plan 回退 + 可选 LLM 修复 |
 | 仿真验证 | `npusim`/`local_npu`/`static` 三后端，精度混合容差，失败触发重生成 |
 | 跨服务器上板 | SSH 预检/部署/运行/指标/Profile 命令，生成 `board_report.json` |

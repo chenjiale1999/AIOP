@@ -10,7 +10,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..specs import DTYPE_BYTES, TaskSpec
+from ..specs import DTYPE_BYTES, TaskSpec, UnsupportedOperator
 
 # Source: src/ascend/transform/auto_schedule.cc
 UB_PHYSICAL_BYTES = 248 * 1024
@@ -87,6 +87,7 @@ class Plan:
     block_n: int = 0
     block_k: int = 0
     epilogue: str = "none"
+    out_cast: bool = False
     tail_mode: str = "exact"
     buffer_bytes: dict[str, int] = field(default_factory=dict)
 
@@ -105,6 +106,7 @@ class Plan:
             "block_n": self.block_n,
             "block_k": self.block_k,
             "epilogue": self.epilogue,
+            "out_cast": self.out_cast,
             "tail_mode": self.tail_mode,
             "buffer_bytes": dict(self.buffer_bytes),
         }
@@ -198,16 +200,24 @@ def _gemm_plan(spec: TaskSpec) -> Plan:
     tiles = (m // block_m) * (n // block_n)
     blocks = min(AIC_CORES, max(1, tiles))
     epilogue = "relu" if spec.name == "gemm_relu" or spec.attrs.get("epilogue") == "relu" else "none"
-    if epilogue != "none" and block_m % 2 != 0:
+    out_elem = DTYPE_BYTES[spec.output.dtype]
+    needs_cast = spec.output.dtype != "float32"
+    if (epilogue != "none" or needs_cast) and block_m % 2 != 0:
+        # The L0C -> UB epilogue moves a half-height tile per dual_copy.
         block_m = largest_divisor(m, block_m - 1 if block_m > 1 else 1)
-        if block_m % 2 != 0:
-            epilogue = "none"
+    if epilogue != "none" and block_m % 2 != 0:
+        epilogue = "none"
+    tiles = (m // block_m) * (n // block_n)
+    blocks = min(AIC_CORES, max(1, tiles))
     buffer_bytes = {}
-    if epilogue != "none":
+    if epilogue != "none" or needs_cast:
         buffer_bytes["c_ub"] = (block_m // 2) * block_n * 4
+    if needs_cast:
+        buffer_bytes["c_out"] = (block_m // 2) * block_n * out_elem
+    variant = "persistent_gemm" if not (epilogue != "none" or needs_cast) else "persistent_gemm_epilogue"
     return Plan(
         family=spec.family,
-        variant="persistent_gemm" if epilogue == "none" else "persistent_gemm_epilogue",
+        variant=variant,
         blocks=blocks,
         num_stages=2,
         iterations=max(1, tiles // blocks),
@@ -215,12 +225,39 @@ def _gemm_plan(spec: TaskSpec) -> Plan:
         block_n=block_n,
         block_k=block_k,
         epilogue=epilogue,
+        out_cast=needs_cast,
         tail_mode="exact",
         buffer_bytes=buffer_bytes,
     )
 
 
+def build_open_plan(spec: TaskSpec) -> Plan:
+    """Plan for an operator with no A5 template family (LLM open-ended path).
+
+    There is no per-family tiling knowledge here, so nothing is asserted about
+    tile/rows/stage counts. Only the hard grid limit is fixed; capacity is
+    validated a posteriori by lowering and the device compiler.
+    """
+    if spec.supported:
+        return build_plan(spec)
+    family = spec.family
+    cube = family == "gemm"
+    return Plan(
+        family=family,
+        variant="llm_open",
+        blocks=AIC_CORES if cube else AIV_CORES,
+        num_stages=2,
+        tail_mode="exact",
+    )
+
+
 def build_plan(spec: TaskSpec) -> Plan:
+    if not spec.supported or spec.family in ("attention", "unsupported"):
+        raise UnsupportedOperator(
+            spec.unsupported_reasons
+            or [f"{spec.name}: family {spec.family!r} has no A5 template in aiop"],
+            spec,
+        )
     issues = spec.validate()
     if issues:
         raise ValueError("; ".join(issues))
@@ -241,6 +278,17 @@ def build_plan(spec: TaskSpec) -> Plan:
 def check_plan(spec: TaskSpec, plan: Plan) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
+    if plan.variant == "llm_open":
+        # No per-family tiling exists, so only the hard limits can be audited.
+        if plan.blocks < 1 or plan.blocks > AIV_CORES:
+            errors.append(f"blocks={plan.blocks} outside 1..{AIV_CORES}")
+        if spec.family == "gemm" and plan.blocks > AIC_CORES:
+            errors.append(f"cube grid {plan.blocks} exceeds {AIC_CORES}")
+        warnings.append(
+            "open-ended plan: no template tiling/budget was planned; "
+            "UB/L1 capacity is only validated by lowering + device compile"
+        )
+        return {"errors": errors, "warnings": warnings, "ub_used": 0}
     if plan.blocks < 1 or plan.blocks > AIV_CORES:
         errors.append(f"blocks={plan.blocks} outside 1..{AIV_CORES}")
     if spec.family == "gemm":
@@ -254,6 +302,8 @@ def check_plan(spec: TaskSpec, plan: Plan) -> dict[str, Any]:
             errors.append(f"L1 {l1 * plan.num_stages}B exceeds {L1_BUDGET_BYTES}B")
         if plan.epilogue != "none" and plan.block_m % 2:
             errors.append("epilogue requires even block_m for dual_copy")
+        if plan.out_cast and plan.block_m % 2:
+            errors.append("output cast requires even block_m for dual_copy")
     else:
         if plan.threads <= 0 or plan.threads > 2048:
             errors.append(f"threads={plan.threads} outside 1..2048")

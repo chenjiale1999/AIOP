@@ -193,8 +193,11 @@ def _row_reduce(spec: TaskSpec, plan: Plan) -> str:
     src_dtype = spec.input.dtype
     out_dtype = spec.output.dtype
     post = " / T.float32(D)" if spec.name == "reduce_mean" else ""
-    shape_in = tuple(spec.input.shape)
-    shape_out = tuple(spec.output.shape)
+    # Row families are fed as a flat [rows, D] view, so a rank-N manifest tensor
+    # (e.g. [B, S, D]) and a 2-D TaskSpec share one kernel.
+    rows = spec.input.numel // spec.input.shape[-1]
+    shape_in = (rows, spec.input.shape[-1])
+    shape_out = (rows,)
     return _row_common(spec, plan) + f'''
     @T.prim_func
     def main(X: T.Tensor({shape_in}, {json.dumps(src_dtype)}), Y: T.Tensor({shape_out}, {json.dumps(out_dtype)})):
@@ -222,7 +225,7 @@ def _row_reduce(spec: TaskSpec, plan: Plan) -> str:
 
 def _softmax(spec: TaskSpec, plan: Plan) -> str:
     dtype = spec.input.dtype
-    shape = tuple(spec.input.shape)
+    shape = (spec.input.numel // spec.input.shape[-1], spec.input.shape[-1])
     return _row_common(spec, plan) + f'''
     @T.prim_func
     def main(X: T.Tensor({shape}, {json.dumps(dtype)}), Y: T.Tensor({shape}, {json.dumps(dtype)})):
@@ -259,7 +262,7 @@ def _softmax(spec: TaskSpec, plan: Plan) -> str:
 
 def _norm(spec: TaskSpec, plan: Plan) -> str:
     dtype = spec.input.dtype
-    shape = tuple(spec.input.shape)
+    shape = (spec.input.numel // spec.input.shape[-1], spec.input.shape[-1])
     is_layer = spec.family == "layernorm"
     eps = spec.attrs.get("eps", 1e-6)
     w_dtype = spec.inputs[1].dtype
@@ -276,10 +279,10 @@ def _norm(spec: TaskSpec, plan: Plan) -> str:
         )
         bias_load = f"            T.copy({bias_name}, b_ub)"
     var_calc = (
-        "T.reducer_update(rsum[r], x[r, i])\n"
-        "                        T.reducer_update(rsq[r], x[r, i] * x[r, i])"
+        "T.reducer_update(rsum[r], xv[r, i])\n"
+        "                        T.reducer_update(rsq[r], xv[r, i] * xv[r, i])"
         if is_layer
-        else "T.reducer_update(rsq[r], x[r, i] * x[r, i])"
+        else "T.reducer_update(rsq[r], xv[r, i] * xv[r, i])"
     )
     extra_reducer = (
         '                    rsum = T.alloc_reducer((ROWS,), T.float32, op="sum")\n'
@@ -300,11 +303,12 @@ def _norm(spec: TaskSpec, plan: Plan) -> str:
         if is_layer
         else "T.rsqrt(sq[r] / T.float32(D) + T.float32(EPS))"
     )
-    center = "(x[r, i] - mu[r])" if is_layer else "x[r, i]"
+    center = "(xv[r, i] - mu[r])" if is_layer else "xv[r, i]"
     out_expr = f"{center} * inv[r] * T.cast(w_ub[i], T.float32)"
     if is_layer and len(spec.inputs) == 3:
         out_expr += " + T.cast(b_ub[i], T.float32)"
     inputs_decl = ", ".join(_t(t.name, t) for t in spec.inputs)
+    x_name = spec.inputs[0].name
     return _row_common(spec, plan) + f'''
     @T.prim_func
     def main({inputs_decl}, Y: T.Tensor({shape}, {json.dumps(dtype)})):
@@ -316,10 +320,10 @@ def _norm(spec: TaskSpec, plan: Plan) -> str:
             for t in T.Pipelined(ITERS, num_stages=2):
                 base_row = (t * CORES + core) * ROWS
                 with T.SimtVF(threads=THREADS):
-                    x = T.alloc_fragment((ROWS, TILE), T.float32)
+                    xv = T.alloc_fragment((ROWS, TILE), T.float32)
                     for r, i in T.Parallel(ROWS, TILE, coalesced_width=T.int32(1)):
                         row = T.min(base_row + r, BATCH - 1)
-                        x[r, i] = T.if_then_else(i < D, T.cast(X[row, i], T.float32), T.float32(0))
+                        xv[r, i] = T.if_then_else(i < D, T.cast({x_name}[row, i], T.float32), T.float32(0))
 {extra_reducer}                    rsq = T.alloc_reducer((ROWS,), T.float32, op="sum")
                     T.reducer_init(rsq)
                     for r, i in T.Parallel(ROWS, TILE, coalesced_width=T.int32(1)):
@@ -351,22 +355,31 @@ def _gemm(spec: TaskSpec, plan: Plan) -> str:
     nt = n // bn
     tiles = (m // bm) * nt
     epilogue = plan.epilogue
+    half = bm // 2
     c_alloc = ""
     store = ""
     if epilogue == "relu":
-        c_alloc = f"            C_ub = T.alloc_shared(({bm // 2}, {bn}), T.float32)\n"
+        c_alloc = f"            C_ub = T.alloc_shared(({half}, {bn}), T.float32)\n"
         store = f'''                T.dual_copy(C_l0c, C_ub)
                 with T.SimtVF(threads=128):
-                    for i, j in T.Parallel({bm // 2}, {bn}):
+                    for i, j in T.Parallel({half}, {bn}):
                         C_ub[i, j] = T.max(C_ub[i, j], T.float32(0))
                 T.dual_copy(C_ub, C[m : m + BLOCK_M, n : n + BLOCK_N], l2_cache_ctrl="NOTALLOC_PW")
 '''
+    elif plan.out_cast:
+        # Manifest GEMM writes C in the operand dtype: L0C (fp32) -> UB -> cast -> GM.
+        c_alloc = (
+            f"            C_ub = T.alloc_shared(({half}, {bn}), T.float32)\n"
+            f"            C_out = T.alloc_shared(({half}, {bn}), {json.dumps(out_dtype)})\n"
+        )
+        store = f'''                T.dual_copy(C_l0c, C_ub)
+                with T.SimtVF(threads=128):
+                    for i, j in T.Parallel({half}, {bn}):
+                        C_out[i, j] = T.cast(C_ub[i, j], {json.dumps(out_dtype)})
+                T.dual_copy(C_out, C[m : m + BLOCK_M, n : n + BLOCK_N], l2_cache_ctrl="NOTALLOC_PW")
+'''
     else:
         store = "                T.copy(C_l0c, C[m : m + BLOCK_M, n : n + BLOCK_N])\n"
-    out_cast = ""
-    if out_dtype != "float32":
-        # Rare path: cast the L0C result through UB before storing.
-        out_cast = ""
     return f'''def build():
     M, N, K = {m}, {n}, {k}
     BLOCK_M, BLOCK_N, BLOCK_K = {bm}, {bn}, {bk}

@@ -1,4 +1,4 @@
-name: softmax
+name: softmax_2
 family: softmax
 formula: "softmax(x) = exp(x - max(x)) / sum(exp(x - max(x)))"
 inputs:

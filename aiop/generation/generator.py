@@ -21,20 +21,34 @@ def generate(
     design: str = "",
     knowledge: str = "",
     strategy: str = "auto",
+    open_mode: bool = False,
 ) -> tuple[Path, str]:
     """Return (kernel_path, generator_name).
 
-    ``strategy``: auto | template | llm. In auto mode the LLM is used only when
-    configured. LLM output must parse as Python and define build(); otherwise
-    the verified template is used.
+    ``strategy``: auto | template | llm.
+
+    * ``template``: always render the verified A5 template.
+    * ``llm``: always ask the LLM first, then fall back to the template.
+    * ``auto``: verified template when this family has one; LLM only for
+      families without a template (open-ended mode). This keeps the
+      deterministic path for everything the A5 templates already cover, and
+      spends LLM calls where they add capability.
+
+    LLM output must parse as Python and define build(); otherwise the template
+    is used.
     """
     path = directory / f"{spec.name}.py"
-    use_llm = strategy == "llm" or (strategy == "auto" and cfg.agent.llm.enabled)
+    has_template = spec.family in templates.TEMPLATE_NAME
+    use_llm = strategy == "llm" or (
+        strategy == "auto" and cfg.agent.llm.enabled and not has_template
+    )
     if use_llm:
         client = LLMClient(cfg)
         if client.available:
             try:
-                source = client.generate_kernel(spec.to_dict(), design, knowledge)
+                source = client.generate_kernel(
+                    spec.to_dict(), design, knowledge, open_mode=open_mode
+                )
                 ast.parse(source)
                 if "def build(" not in source:
                     raise ValueError("LLM output has no build()")
@@ -42,6 +56,11 @@ def generate(
                 return path, "llm"
             except Exception as exc:  # noqa: BLE001 - fall through to templates
                 (directory / "llm_error.log").write_text(str(exc), encoding="utf-8")
+    if spec.family not in templates.TEMPLATE_NAME:
+        raise RuntimeError(
+            f"open-ended generation produced no usable kernel for family "
+            f"{spec.family!r} and no template exists; see llm_error.log"
+        )
     return templates.write_kernel(spec, plan, directory, None), "template"
 
 
@@ -64,4 +83,8 @@ def repair(
                 return kernel_path, "llm_repair"
             except Exception:  # noqa: BLE001
                 pass
+    if spec.family not in templates.TEMPLATE_NAME:
+        raise RuntimeError(
+            f"LLM repair failed for family {spec.family!r} and no template exists"
+        )
     return templates.write_kernel(spec, plan, kernel_path.parent, None), "template_regenerate"

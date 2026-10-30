@@ -68,15 +68,54 @@ class LLMClient:
             raise RuntimeError(f"LLM request failed: {exc}") from exc
         return data["choices"][0]["message"]["content"]
 
-    def generate_kernel(self, spec_dump: dict[str, Any], design: str, knowledge: str) -> str:
+    def generate_kernel(
+        self,
+        spec_dump: dict[str, Any],
+        design: str,
+        knowledge: str,
+        *,
+        open_mode: bool = False,
+    ) -> str:
+        extra = ""
+        if open_mode:
+            extra = (
+                "\nOPEN-ENDED MODE: no aiop template exists for this family, so the tiling and\n"
+                "memory plan are yours. Declare the primary output named in SPEC outputs[0] as\n"
+                "the single result tensor returned by build(); metadata inputs are int32/int64\n"
+                "tensors that already hold valid indices. Keep every on-chip buffer within\n"
+                "UB 208 KiB / L1 512 KiB / L0C 256 KiB and the grid within 64 vector blocks.\n"
+            )
         prompt = (
             "Implement this operator.\n\n"
             f"SPEC:\n{json.dumps(spec_dump, indent=2)}\n\n"
             f"DESIGN:\n{design}\n\n"
-            f"KNOWLEDGE:\n{knowledge}\n\n"
+            f"KNOWLEDGE:\n{knowledge}\n"
+            f"{extra}\n"
             "Output only the Python module."
         )
         return _strip_fences(self.complete(prompt))
+
+    def generate_golden(self, spec_dump: dict[str, Any], design: str) -> str:
+        """Plain-PyTorch CPU reference, used only when no aiop golden exists.
+
+        The result is a *self-referenced* oracle: it never counts as independent
+        evidence, and the orchestrator records it as such in the report.
+        """
+        names = ", ".join(t["name"] for t in spec_dump.get("inputs", []))
+        prompt = (
+            "Write the body of a CPU PyTorch reference function for this operator.\n\n"
+            f"SPEC:\n{json.dumps(spec_dump, indent=2)}\n\n"
+            f"DESIGN (context):\n{design}\n\n"
+            f"The function signature is golden({names}); every input is a CPU tensor named as\n"
+            "in SPEC. Compute the PRIMARY output (SPEC outputs[0]) in float32 and assign it to\n"
+            "a variable named `out` shaped like SPEC outputs[0]. Rules:\n"
+            "- torch only; no tilelang, numpy, file IO or prints;\n"
+            "- do not return anything, just assign `out`;\n"
+            "- examples: `out = (x.float() / torch.sqrt(x.float().pow(2).mean(-1, keepdim=True) + eps))`.\n"
+            "Output only the body indented by four spaces, no `def`, no fences."
+        )
+        body = _strip_fences(self.complete(prompt))
+        return _normalize_body(body)
 
     def repair_kernel(self, source: str, error: str, design: str) -> str:
         prompt = (
@@ -97,3 +136,17 @@ def _strip_fences(text: str) -> str:
             lines = lines[:-1]
         text = "\n".join(lines)
     return text
+
+
+def _normalize_body(text: str) -> str:
+    """Re-indent a reference body to one uniform 4-space base level."""
+    lines = [line.rstrip() for line in text.splitlines()]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not lines:
+        raise ValueError("LLM returned an empty reference body")
+    indents = [len(line) - len(line.lstrip()) for line in lines if line.strip()]
+    base = min(indents) if indents else 0
+    return "\n".join("    " + line[base:] if line.strip() else "" for line in lines)

@@ -158,8 +158,10 @@ def check_constraints(spec: TaskSpec, plan, kernel_path: Path) -> Report:
         if tensor.dtype not in DTYPE_BYTES:
             report.error("HW004", f"{tensor.name}: dtype {tensor.dtype} is not supported on A5")
     if spec.family == "gemm":
-        if spec.output.dtype != "float32":
-            report.error("HW005", "gemm template requires a float32 accumulator/output")
+        if spec.output.dtype not in ("float32", "float16", "bfloat16"):
+            report.error("HW005", f"gemm output dtype {spec.output.dtype} has no L0C->UB cast path")
+        if spec.output.dtype != "float32" and not getattr(plan, "out_cast", False):
+            report.error("HW005", "gemm non-fp32 output requires the UB cast epilogue in the plan")
         for tensor in spec.inputs:
             if tensor.dtype not in ("float16", "bfloat16", "float32"):
                 report.error("HW006", f"gemm input dtype {tensor.dtype} is not supported by the L1 path")
@@ -213,6 +215,11 @@ def check_semantics(spec: TaskSpec, plan, kernel_path: Path) -> Report:
         ):
             if needle not in source:
                 report.error(rule, message)
+        if getattr(plan, "out_cast", False) and "T.dual_copy" not in source:
+            report.error(
+                "SEM017",
+                "non-fp32 GEMM output must cast L0C through UB (T.dual_copy) before the GM store",
+            )
     if spec.family == "softmax" and "T.exp(" not in source:
         report.error("SEM010", "softmax kernel does not compute exp")
     if plan.tail_mode == "guarded":

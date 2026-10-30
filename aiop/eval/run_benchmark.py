@@ -10,7 +10,12 @@ import yaml
 
 from ..agent.orchestrator import OperatorAgent, task_id_for
 from ..config import PROJECT_ROOT, load_config
+from ..manifest import bind_operator
 from ..specs import TaskSpec
+
+
+def _is_manifest_case(item: object) -> bool:
+    return isinstance(item, dict) and "op" in item and "family" not in item
 
 
 def load_cases(path: str | Path | None = None) -> list[TaskSpec]:
@@ -22,7 +27,17 @@ def load_cases(path: str | Path | None = None) -> list[TaskSpec]:
         return items
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     raw = data.get("cases", data) if isinstance(data, dict) else data
-    return [TaskSpec.from_dict(item) for item in raw]
+    return [
+        bind_operator(
+            item.get("manifest"),
+            item["op"],
+            workload=item.get("workload", 0),
+            dtype_case=item.get("dtype_case", 0),
+        )
+        if _is_manifest_case(item)
+        else TaskSpec.from_dict(item)
+        for item in raw
+    ]
 
 
 def run_benchmark(args) -> int:

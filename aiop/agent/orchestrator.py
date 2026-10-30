@@ -20,13 +20,14 @@ from ..checks.compiler import CompileResult, compile_kernel
 from ..checks.static import Report as StaticReport
 from ..checks.static import run_static
 from ..config import Config, load_config
-from ..generation.generator import generate
+from ..generation.generator import generate, repair
+from ..generation.llm import LLMClient
 from ..knowledge.index import KnowledgeIndex, default_index
-from ..runtime.hardware import Plan, build_plan, roofline
+from ..runtime.hardware import Plan, build_open_plan, build_plan, roofline
 from ..simulation.runner import SimResult, run_simulation
-from ..simulation.testgen import write_test
-from ..specs import TaskSpec
-from .design import build_design
+from ..simulation.testgen import GOLDEN_FAMILIES, write_test
+from ..specs import TaskSpec, UnsupportedOperator
+from .design import build_blocked_design, build_design, build_open_design
 from .state import TaskState
 
 
@@ -93,6 +94,7 @@ def _fallback_plan(spec: TaskSpec, plan: Plan, attempt: int) -> Plan:
             block_n=block_n,
             block_k=block_k,
             epilogue="none",
+            out_cast=plan.out_cast,
             tail_mode="exact",
         )
     return plan
@@ -104,6 +106,11 @@ class OperatorAgent:
         self.kb = kb or default_index()
 
     # ------------------------------------------------------------------ helpers
+    def _llm_client(self) -> LLMClient | None:
+        """Return a usable client, or None when the LLM is not configured."""
+        client = LLMClient(self.cfg)
+        return client if client.available else None
+
     def _context(self, spec: TaskSpec) -> str:
         query = (
             f"{spec.family} {spec.name} tiling 内存 容量 精度 性能 "
@@ -151,8 +158,54 @@ class OperatorAgent:
 
         # Stage 1: design
         state.enter("design")
-        plan = build_plan(spec)
-        design = build_design(spec, plan, knowledge_hits)
+        mode = "template"
+        golden_source = "aiop-builtin"
+        golden_override: str | None = None
+        open_reasons: list[str] = []
+        try:
+            plan = build_plan(spec)
+            design = build_design(spec, plan, knowledge_hits)
+        except UnsupportedOperator as exc:
+            client = self._llm_client()
+            if client is None:
+                return self._run_unsupported(
+                    spec,
+                    exc,
+                    task_id=task_id,
+                    task_dir=task_dir,
+                    state=state,
+                    knowledge_hits=knowledge_hits,
+                    started=started,
+                )
+            # Open-ended mode: no template family, so the LLM owns the tiling.
+            mode = "open"
+            strategy = "llm"
+            open_reasons = list(exc.reasons)
+            plan = build_open_plan(spec)
+            golden_source = "unavailable"
+            if not spec.metadata_inputs:
+                golden_source = "llm-self-referenced"
+            design = build_open_design(
+                spec, open_reasons, knowledge_hits, golden_source=golden_source
+            )
+            if golden_source == "llm-self-referenced":
+                try:
+                    golden_override = client.generate_golden(spec.to_dict(), design)
+                except Exception as exc:  # noqa: BLE001 - reference is optional
+                    golden_override = None
+                    golden_source = "unavailable"
+                    design = build_open_design(
+                        spec, open_reasons, knowledge_hits, golden_source=golden_source
+                    )
+                    self._write_debug(
+                        task_dir / "debug_log.md",
+                        f"## Golden unavailable — {time.strftime('%Y-%m-%dT%H:%M:%S')}\n"
+                        f"- error: {type(exc).__name__}: {exc}",
+                    )
+            if golden_override:
+                (task_dir / "golden_ref.py").write_text(
+                    "def golden_body():\n" + golden_override + "\n", encoding="utf-8"
+                )
         (task_dir / "DESIGN.md").write_text(design, encoding="utf-8")
         state.complete("design")
 
@@ -166,23 +219,36 @@ class OperatorAgent:
         kernel_path = task_dir / f"{spec.name}.py"
         test_path = task_dir / f"test_{spec.name}.py"
         generator_name = "template"
+        can_test = spec.family in GOLDEN_FAMILIES or golden_override is not None
         replaced_plan = None
 
         # Stage 2/3: generate + static + compile with repair loop
         state.enter("generate")
         attempts: list[dict[str, Any]] = []
         current_plan = plan
+        pending_repair: str | None = None
         for attempt in range(1, self.cfg.agent.max_attempts + 1):
             try:
-                kernel_path, generator_name = generate(
-                    spec,
-                    current_plan,
-                    task_dir,
-                    self.cfg,
-                    design=design,
-                    knowledge=knowledge_context,
-                    strategy=strategy,
-                )
+                if pending_repair is not None and self._llm_client() is not None:
+                    kernel_path, generator_name = repair(
+                        spec,
+                        current_plan,
+                        kernel_path,
+                        pending_repair,
+                        self.cfg,
+                        design=design,
+                    )
+                else:
+                    kernel_path, generator_name = generate(
+                        spec,
+                        current_plan,
+                        task_dir,
+                        self.cfg,
+                        design=design,
+                        knowledge=knowledge_context,
+                        strategy=strategy,
+                        open_mode=mode == "open",
+                    )
             except Exception as exc:  # noqa: BLE001 - generator bugs become task failures
                 error = f"{type(exc).__name__}: {exc}"
                 attempts.append(
@@ -195,16 +261,19 @@ class OperatorAgent:
                 )
                 compile_result = CompileResult(ok=False, error=error, category="generator")
                 break
-            write_test(
-                spec,
-                current_plan,
-                task_dir,
-                cann_home=self.cfg.cann.home,
-                device_flags=self.cfg.compile.device_flags,
-                warmup=self.cfg.simulation.warmup,
-                repeats=self.cfg.simulation.repeats,
-                tilelang_repo=self.cfg.paths.tilelang_repo,
-            )
+            pending_repair = None
+            if can_test:
+                write_test(
+                    spec,
+                    current_plan,
+                    task_dir,
+                    cann_home=self.cfg.cann.home,
+                    device_flags=self.cfg.compile.device_flags,
+                    warmup=self.cfg.simulation.warmup,
+                    repeats=self.cfg.simulation.repeats,
+                    tilelang_repo=self.cfg.paths.tilelang_repo,
+                    golden_override=golden_override,
+                )
             static_report = run_static(spec, current_plan, kernel_path, self.cfg)
             (task_dir / "static_report.json").write_text(
                 json.dumps(static_report.to_dict(), indent=2), encoding="utf-8"
@@ -217,7 +286,10 @@ class OperatorAgent:
                     f"## Attempt {attempt} — {time.strftime('%Y-%m-%dT%H:%M:%S')}\n"
                     f"- mode: generate\n- classification: static_fail\n- error: {error}",
                 )
-                current_plan = _fallback_plan(spec, current_plan, attempt + 1)
+                if self._llm_client() is not None:
+                    pending_repair = error
+                else:
+                    current_plan = _fallback_plan(spec, current_plan, attempt + 1)
                 continue
 
             state.enter("compile")
@@ -245,24 +317,37 @@ class OperatorAgent:
                 break
             if compile_result.category in ("cann_too_old", "toolchain_host_headers"):
                 break
-            # keep the failing source for audit, then try a conservative variant
+            # keep the failing source for audit, then let the LLM repair it, or
+            # fall back to a conservative template variant when no LLM is set.
             shutil.copyfile(kernel_path, history / f"{spec.name}_attempt{attempt}.py")
-            current_plan = _fallback_plan(spec, current_plan, attempt + 1)
+            if self._llm_client() is not None:
+                pending_repair = compile_result.error or compile_result.category
+            else:
+                current_plan = _fallback_plan(spec, current_plan, attempt + 1)
 
         artifacts["kernel"] = str(kernel_path)
-        artifacts["test"] = str(test_path)
+        if can_test:
+            artifacts["test"] = str(test_path)
         artifacts["compile_report"] = str(task_dir / "compile_result.json")
         state.artifacts = artifacts
 
         compile_ok = bool(compile_result and compile_result.ok)
-        if compile_ok and current_plan is not plan:
+        if compile_ok and current_plan is not plan and mode == "template":
             # Documents must reflect the plan that actually compiled.
             design = build_design(spec, current_plan, knowledge_hits)
             (task_dir / "DESIGN.md").write_text(design, encoding="utf-8")
             replaced_plan = current_plan
 
         sim_result: SimResult | None = None
-        if compile_ok and simulate:
+        if compile_ok and simulate and not can_test:
+            self._write_debug(
+                task_dir / "debug_log.md",
+                f"## Simulation skipped — {time.strftime('%Y-%m-%dT%H:%M:%S')}\n"
+                f"- classification: no_golden\n- golden_source: {golden_source}\n"
+                "- reason: manifest metadata inputs need their `values` generators, "
+                "which aiop does not implement",
+            )
+        if compile_ok and simulate and can_test:
             state.enter("simulate")
             sim_result = run_simulation(
                 task_dir,
@@ -291,6 +376,7 @@ class OperatorAgent:
                         design=design,
                         knowledge=knowledge_context,
                         strategy=strategy,
+                        open_mode=mode == "open",
                     )
                 except Exception as exc:  # noqa: BLE001
                     self._write_debug(
@@ -308,6 +394,7 @@ class OperatorAgent:
                     warmup=self.cfg.simulation.warmup,
                     repeats=self.cfg.simulation.repeats,
                     tilelang_repo=self.cfg.paths.tilelang_repo,
+                    golden_override=golden_override,
                 )
                 static_report = run_static(spec, current_plan, kernel_path, self.cfg)
                 compile_result = compile_kernel(kernel_path, task_dir, self.cfg)
@@ -384,11 +471,14 @@ class OperatorAgent:
         elif board_result and board_result.status in ("failed", "blocked"):
             status = "blocked_board"
         elif sim_result and sim_result.passed:
-            status = "success"
+            status = "success" if mode == "template" else "success_static_only"
         else:
             status = "success_static_only"
 
-        verified = bool(compile_ok and sim_result and sim_result.passed)
+        # Only a reference aiop owns counts as independent evidence; an LLM-written
+        # golden agreeing with an LLM-written kernel is not proof.
+        trusted_golden = mode == "template"
+        verified = bool(compile_ok and sim_result and sim_result.passed and trusted_golden)
         state.status = status
         state.save(task_dir / "state.json")
 
@@ -396,6 +486,9 @@ class OperatorAgent:
             "task_id": task_id,
             "status": status,
             "verified": verified,
+            "mode": mode,
+            "golden_source": golden_source,
+            "self_referenced": not trusted_golden,
             "simulation_requested": simulate,
             "generator": generator_name,
             "spec": spec.to_dict(),
@@ -410,7 +503,7 @@ class OperatorAgent:
             "artifacts": artifacts,
             "environment": self._env_snapshot(),
             "elapsed_s": round(time.time() - started, 2),
-            "notes": self._notes(sim_result, board_result, compile_result),
+            "notes": self._notes(sim_result, board_result, compile_result, mode, golden_source),
         }
         (task_dir / "result.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
         (task_dir / "report.md").write_text(self._report_markdown(result), encoding="utf-8")
@@ -421,9 +514,85 @@ class OperatorAgent:
                     "spec": spec.to_dict(),
                     "plan": result["plan"],
                     "generator": generator_name,
+                    "mode": mode,
+                    "golden_source": golden_source,
                     "tilelang_repo": self.cfg.paths.tilelang_repo,
                     "cann_home": self.cfg.cann.home,
                     "device_flags": self.cfg.compile.device_flags,
+                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return result
+
+    def _run_unsupported(
+        self,
+        spec: TaskSpec,
+        exc: UnsupportedOperator,
+        *,
+        task_id: str,
+        task_dir: Path,
+        state: TaskState,
+        knowledge_hits: list[dict[str, Any]],
+        started: float,
+    ) -> dict[str, Any]:
+        """Honest terminal state: record the gap, generate nothing, fake nothing."""
+        reasons = list(exc.reasons)
+        design = build_blocked_design(spec, reasons, knowledge_hits)
+        (task_dir / "DESIGN.md").write_text(design, encoding="utf-8")
+        state.stages["design"] = "blocked_unsupported"
+        state.status = "blocked_unsupported"
+        notes = [
+            "Operator contract parsed from the TileOPs manifest, but no A5 template family "
+            "covers it in aiop; no kernel was generated and no measurement is reported.",
+            *[f"unsupported: {reason}" for reason in reasons],
+            "To let the LLM attempt this operator, configure agent.llm "
+            "(AIOP_LLM_BASE_URL / AIOP_LLM_MODEL / AIOP_LLM_API_KEY) and rerun; "
+            "the open-ended path still enforces static + lowering + device-compile gates.",
+        ]
+        result: dict[str, Any] = {
+            "task_id": task_id,
+            "status": "blocked_unsupported",
+            "verified": False,
+            "mode": "blocked",
+            "golden_source": "none",
+            "self_referenced": False,
+            "simulation_requested": False,
+            "generator": "none",
+            "spec": spec.to_dict(),
+            "plan": None,
+            "roofline": roofline(spec),
+            "static": None,
+            "compile": None,
+            "simulation": None,
+            "board": None,
+            "attempts": [],
+            "unsupported_reasons": reasons,
+            "knowledge": knowledge_hits,
+            "artifacts": {
+                "design": str(task_dir / "DESIGN.md"),
+                "spec": str(task_dir / "spec.yaml"),
+            },
+            "environment": self._env_snapshot(),
+            "elapsed_s": round(time.time() - started, 2),
+            "notes": notes,
+        }
+        state.artifacts = result["artifacts"]
+        state.save(task_dir / "state.json")
+        (task_dir / "result.json").write_text(
+            json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        (task_dir / "report.md").write_text(self._report_markdown(result), encoding="utf-8")
+        (task_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "task_id": task_id,
+                    "spec": spec.to_dict(),
+                    "plan": None,
+                    "generator": "none",
+                    "unsupported_reasons": reasons,
                     "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 },
                 indent=2,
@@ -440,8 +609,21 @@ class OperatorAgent:
         except Exception as exc:  # noqa: BLE001
             return {"error": str(exc)}
 
-    def _notes(self, sim: SimResult | None, board, compile_result: CompileResult | None) -> list[str]:
+    def _notes(
+        self,
+        sim: SimResult | None,
+        board,
+        compile_result: CompileResult | None,
+        mode: str = "template",
+        golden_source: str = "aiop-builtin",
+    ) -> list[str]:
         notes: list[str] = []
+        if mode == "open":
+            notes.append(
+                "open-ended mode: no A5 template family; the kernel was drafted by the LLM and "
+                "still passed static + lowering + device compile gates. Tiling/UB assertions are "
+                "not planned, only observed through lowering."
+            )
         if compile_result and compile_result.ok:
             notes.append(
                 "L1/L2 verified: lowering + bisheng device compile passed "
@@ -455,7 +637,17 @@ class OperatorAgent:
             )
         if sim and sim.passed:
             backend = sim.backend
-            notes.append(f"L3 passed on backend={backend}.")
+            notes.append(f"L3 passed on backend={backend} (golden={golden_source}).")
+            if golden_source != "aiop-builtin":
+                notes.append(
+                    "That L3 pass is self-referenced: the reference was also written by the LLM, "
+                    "so agreement is not independent evidence. `verified` stays False."
+                )
+        if mode == "open" and sim is None:
+            notes.append(
+                "L3 skipped: no reference implementation is available for this operator "
+                f"(golden_source={golden_source})."
+            )
         if board and board.status == "skipped":
             notes.append("L4 skipped: configure board.host to enable remote measurement.")
         if board and board.status == "blocked":
@@ -472,6 +664,8 @@ class OperatorAgent:
             "",
             f"- status: **{result['status']}**",
             f"- verified: `{result['verified']}`",
+            f"- mode: `{result.get('mode', 'template')}`",
+            f"- golden: `{result.get('golden_source', 'aiop-builtin')}`",
             f"- generator: `{result['generator']}`",
             f"- task: `{result['task_id']}`",
             "",
@@ -489,6 +683,10 @@ class OperatorAgent:
             f"- audit: `{json.dumps(comp.get('audit', {}))}`",
             "",
         ]
+        if result.get("unsupported_reasons"):
+            lines += ["## 不支持原因", ""]
+            lines += [f"- {reason}" for reason in result["unsupported_reasons"]]
+            lines += ["", "> 未生成 kernel，也未做任何编译/仿真/上板测量。", ""]
         if comp.get("error"):
             lines += ["```text", comp["error"][-2000:], "```", ""]
         lines += [

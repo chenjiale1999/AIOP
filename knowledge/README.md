@@ -16,6 +16,7 @@ skill 负责**流程与约束**，本知识库负责**事实、速查与骨架**
 | 7 | [07-simulation-and-accuracy.md](07-simulation-and-accuracy.md) | 仿真、精度判定、失败定位 | 门禁结论 |
 | 8 | [08-board-deployment.md](08-board-deployment.md) | 远端 A5 实测 | 上板报告 |
 | 9 | [09-verified-samples.md](09-verified-samples.md) | 找已验证样例 | 可复用 kernel 路径 |
+| 10 | [10-manifest-spec.md](10-manifest-spec.md) | 需求来自 TileOPs manifest | 契约绑定结果 + 可生成性判定 |
 
 ## 检索协议
 

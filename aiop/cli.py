@@ -13,12 +13,26 @@ from .checks.compiler import compile_kernel
 from .checks.static import run_static
 from .config import load_config
 from .knowledge.index import default_index
+from .manifest import bind_operator, describe_operator, list_operators
 from .runtime.hardware import Plan, build_plan
 from .simulation.runner import run_simulation
 from .specs import TaskSpec, spec_from_requirement
 
 
 def _load_spec(args) -> TaskSpec:
+    manifest = getattr(args, "manifest", None)
+    op = getattr(args, "op", None)
+    if op and not manifest:
+        manifest = load_config(getattr(args, "config", "") or None).paths.tileops_manifest
+    if manifest and op:
+        return bind_operator(
+            manifest,
+            op,
+            workload=getattr(args, "workload", 0),
+            dtype_case=getattr(args, "dtype_case", 0),
+        )
+    if manifest or op:
+        raise SystemExit("--manifest and --op must be given together")
     if getattr(args, "spec", None):
         path = Path(args.spec)
         if path.suffix in (".yaml", ".yml"):
@@ -26,7 +40,7 @@ def _load_spec(args) -> TaskSpec:
         return TaskSpec.from_dict(json.loads(path.read_text(encoding="utf-8")))
     if getattr(args, "requirement", None):
         return spec_from_requirement(args.requirement)
-    raise SystemExit("provide --spec <file> or --requirement <text>")
+    raise SystemExit("provide --spec <file>, --requirement <text>, or --manifest <file> --op <name>")
 
 
 def _load_task(task_arg: str) -> tuple[Path, TaskSpec, Plan]:
@@ -64,6 +78,11 @@ def cmd_generate(args) -> int:
     else:
         print(f"status: {result['status']}  verified: {result['verified']}")
         print(f"task:   {task_dir}")
+        if result["status"] == "blocked_unsupported":
+            for reason in result.get("unsupported_reasons", []):
+                print(f"unsupported: {reason}")
+            print(f"design: {task_dir / 'DESIGN.md'}")
+            return 2
         print(f"kernel: {result['artifacts']['kernel']}")
         print(f"report: {task_dir / 'report.md'}")
         for note in result.get("notes", []):
@@ -127,6 +146,41 @@ def cmd_env(args) -> int:
     return 0
 
 
+def cmd_manifest(args) -> int:
+    source = args.manifest or load_config(args.config or None).paths.tileops_manifest
+    if args.manifest_command == "list":
+        rows = list_operators(source)
+        if args.json:
+            print(json.dumps(rows, indent=2, ensure_ascii=False))
+            return 0
+        for row in rows:
+            family = row["aiop_family"] or "-"
+            print(
+                f"{row['op']:<32} {str(row['manifest_family']):<16} "
+                f"rows={row['workloads']:<3} cases={row['cases']:<3} aiop={family}"
+            )
+        supported = [r for r in rows if r["aiop_family"]]
+        print(f"\n{len(supported)}/{len(rows)} entries map onto an aiop A5 template family")
+        return 0
+    if args.manifest_command == "show":
+        print(json.dumps(describe_operator(source, args.op), indent=2, ensure_ascii=False))
+        return 0
+    if args.manifest_command == "convert":
+        spec = bind_operator(
+            source, args.op, workload=args.workload, dtype_case=args.dtype_case
+        )
+        if args.out:
+            spec.save(args.out)
+            print(f"spec: {args.out}")
+        else:
+            print(json.dumps(spec.to_dict(), indent=2, ensure_ascii=False))
+        if not spec.supported:
+            print("unsupported: " + "; ".join(spec.unsupported_reasons), file=sys.stderr)
+            return 1
+        return 0
+    return 1
+
+
 def cmd_eval(args) -> int:
     from .eval.run_benchmark import run_benchmark
 
@@ -139,6 +193,13 @@ def cmd_serve(args) -> int:
     return serve(args)
 
 
+def _workload_selector(value: str):
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="aiop", description="Ascend A5 TileLang operator generation agent")
     parser.add_argument("--config", default="")
@@ -147,8 +208,18 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("generate", help="run the full generation pipeline")
     p.add_argument("--spec", help="TaskSpec YAML/JSON")
     p.add_argument("--requirement", help="natural-language requirement")
+    p.add_argument("--manifest", help="TileOPs manifest yaml (or its spec directory)")
+    p.add_argument("--op", help="manifest entry name, e.g. RMSNormFwdOp")
+    p.add_argument("--workload", default=0, type=_workload_selector, help="workload row index or label")
+    p.add_argument("--dtype-case", type=int, default=0, help="dtype_cases index of that row")
     p.add_argument("--task-id", default="")
-    p.add_argument("--strategy", default="auto", choices=["auto", "template", "llm"])
+    p.add_argument(
+        "--strategy",
+        default="auto",
+        choices=["auto", "template", "llm"],
+        help="auto: verified template when the family has one, else LLM (open mode); "
+        "template: templates only; llm: LLM first, template as fallback",
+    )
     p.add_argument("--simulate", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--board", action="store_true")
     p.add_argument("--force-board", action="store_true")
@@ -182,6 +253,25 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("env", help="probe the local A5 toolchain")
     p.add_argument("--probe-compile", action="store_true")
     p.set_defaults(func=cmd_env)
+
+    p = sub.add_parser("manifest", help="inspect / bind TileOPs manifest entries")
+    p.add_argument("--manifest", default="", help="manifest yaml or spec directory")
+    msub = p.add_subparsers(dest="manifest_command", required=True)
+
+    m = msub.add_parser("list", help="list entries and their aiop family mapping")
+    m.add_argument("--json", action="store_true")
+    m.set_defaults(func=cmd_manifest)
+
+    m = msub.add_parser("show", help="dump one entry's signature and workload rows")
+    m.add_argument("op")
+    m.set_defaults(func=cmd_manifest)
+
+    m = msub.add_parser("convert", help="bind one workload row into a TaskSpec")
+    m.add_argument("op")
+    m.add_argument("--workload", default=0, type=_workload_selector)
+    m.add_argument("--dtype-case", type=int, default=0)
+    m.add_argument("--out", default="")
+    m.set_defaults(func=cmd_manifest)
 
     p = sub.add_parser("eval", help="run the operator benchmark suite")
     p.add_argument("--cases", default="")

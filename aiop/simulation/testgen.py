@@ -25,8 +25,25 @@ TORCH_DTYPE = {
 }
 
 
-def _golden_body(spec: TaskSpec) -> tuple[str, str]:
-    """Return (python statements, output expression list)."""
+GOLDEN_FAMILIES = {
+    "elementwise_unary",
+    "elementwise_binary",
+    "row_reduce",
+    "softmax",
+    "rmsnorm",
+    "layernorm",
+    "gemm",
+}
+
+
+def _golden_body(spec: TaskSpec, override: str | None = None) -> tuple[str, str]:
+    """Return (python statements, output expression list).
+
+    ``override`` is an LLM-written CPU reference body for families without a
+    built-in golden; it must assign the primary result to ``out``.
+    """
+    if override is not None:
+        return override, ["out"]
     if spec.family == "elementwise_unary":
         expr = {
             "relu": "torch.relu(x)",
@@ -64,7 +81,7 @@ def _golden_body(spec: TaskSpec) -> tuple[str, str]:
     if spec.family == "rmsnorm":
         eps = float(spec.attrs.get("eps", 1e-6))
         body = (
-            f"xf = x.to(torch.float32)\n"
+            f"    xf = x.to(torch.float32)\n"
             f"    rstd = torch.rsqrt(xf.pow(2).mean(-1, keepdim=True) + {eps!r})\n"
             f"    wf = w.to(torch.float32).reshape(1, -1)\n"
             f"    out = xf * rstd * wf\n"
@@ -74,7 +91,7 @@ def _golden_body(spec: TaskSpec) -> tuple[str, str]:
         eps = float(spec.attrs.get("eps", 1e-6))
         has_bias = len(spec.inputs) == 3
         body = (
-            f"xf = x.to(torch.float32)\n"
+            f"    xf = x.to(torch.float32)\n"
             f"    mu = xf.mean(-1, keepdim=True)\n"
             f"    var = xf.var(-1, unbiased=False, keepdim=True)\n"
             f"    wf = w.to(torch.float32).reshape(1, -1)\n"
@@ -85,7 +102,7 @@ def _golden_body(spec: TaskSpec) -> tuple[str, str]:
         return body, ["out"]
     if spec.family == "gemm":
         body = (
-            "out = torch.matmul(a.to(torch.float32), b.to(torch.float32).transpose(0, 1))\n"
+            "    out = torch.matmul(a.to(torch.float32), b.to(torch.float32).transpose(0, 1))\n"
         )
         if spec.name == "gemm_relu" or spec.attrs.get("epilogue") == "relu":
             body += "    out = torch.relu(out)\n"
@@ -116,11 +133,48 @@ def _golden_destructure(spec: TaskSpec) -> str:
         if len(spec.inputs) == 3:
             return "x, w, bias = cpu[0], cpu[1], cpu[2]"
         return "x, w = cpu[0], cpu[1]"
-    return "x = cpu[0]"
+    if spec.family in ("elementwise_unary", "row_reduce", "softmax"):
+        return "x = cpu[0]"
+    names = [tensor.name for tensor in spec.inputs]
+    if len(names) == 1:
+        return f"{names[0]} = cpu[0]"
+    return ", ".join(names) + " = " + ", ".join(f"cpu[{i}]" for i in range(len(names)))
 
 
-def render_test(spec: TaskSpec, plan: Plan, cfg_dump: dict, tilelang_repo: str) -> str:
-    golden_body, outputs = _golden_body(spec)
+def _indent_body(body: str) -> str:
+    """Normalize a golden body to a 4-space base indent for inlining."""
+    if not body.strip():
+        return ""
+    lines = [line.rstrip() for line in body.splitlines()]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    indents = [len(line) - len(line.lstrip()) for line in lines if line.strip()]
+    base = min(indents) if indents else 0
+    return "\n".join("    " + line[base:] if line.strip() else "" for line in lines)
+
+
+def _input_reshape(spec: TaskSpec) -> str:
+    """Kernel-side view of the tensors: flat for elementwise, [rows, D] for row families."""
+    if spec.family in ("elementwise_unary", "elementwise_binary"):
+        return "inputs = [t.reshape(-1) for t in inputs]"
+    if spec.family in ("row_reduce", "softmax", "rmsnorm", "layernorm"):
+        d = spec.input.shape[-1]
+        return f"inputs = [inputs[0].reshape(-1, {d})] + list(inputs[1:])"
+    return "pass"
+
+
+def render_test(
+    spec: TaskSpec,
+    plan: Plan,
+    cfg_dump: dict,
+    tilelang_repo: str,
+    golden_override: str | None = None,
+) -> str:
+    golden_body, outputs = _golden_body(spec, golden_override)
+    golden_source = "llm-self-referenced" if golden_override else "aiop-builtin"
+    body = _indent_body(golden_body)
     out_dtype = spec.output.dtype
     pr = spec.precision
     assert pr is not None
@@ -138,6 +192,7 @@ def render_test(spec: TaskSpec, plan: Plan, cfg_dump: dict, tilelang_repo: str) 
 """Auto-generated A5 TileLang verification runner (aiop).
 
 task: {spec.name} ({spec.family})
+golden_source: {golden_source}
 spec_sha: {golden_hash}
 
 Usage:
@@ -208,7 +263,7 @@ def make_inputs(device):
 def golden({golden_args}):
     cpu = [t.detach().float().cpu() if t.is_floating_point() else t.detach().cpu() for t in [{golden_args}]]
     {_golden_destructure(spec)}
-    {golden_body}
+{body}
     return {outputs[0]}.to(OUT_DTYPE)
 
 
@@ -247,8 +302,7 @@ def main():
                 torch.npu.set_device(0)
             inputs = make_inputs(args.device)
             raw_inputs = inputs
-            if {spec.family in ('elementwise_unary', 'elementwise_binary')!r}:
-                inputs = [t.reshape(-1) for t in inputs]
+            {_input_reshape(spec)}
             expected = golden(*[t.cpu() for t in raw_inputs])
             kernel = tilelang.compile(
                 kernel_mod.build(), target="ascend", out_idx=-1,
@@ -313,6 +367,7 @@ def write_test(
     warmup: int,
     repeats: int,
     tilelang_repo: str,
+    golden_override: str | None = None,
 ) -> Path:
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -323,5 +378,8 @@ def write_test(
         "warmup": warmup,
         "repeats": repeats,
     }
-    path.write_text(render_test(spec, plan, cfg_dump, tilelang_repo), encoding="utf-8")
+    path.write_text(
+        render_test(spec, plan, cfg_dump, tilelang_repo, golden_override=golden_override),
+        encoding="utf-8",
+    )
     return path

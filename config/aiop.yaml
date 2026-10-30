@@ -4,6 +4,8 @@ paths:
   knowledge: /home/cjl/workspace/aiop/knowledge
   samples: /home/cjl/workspace/aiop/samples
   reports: /home/cjl/workspace/aiop/reports
+  # TileOPs manifest spec directory (source of truth for op contracts).
+  tileops_manifest: /home/cjl/workspace/TileOPs/src/tileops/manifest/spec
 
 cann:
   # A5 (dav-3510) headers/instructions require CANN 9.2.
@@ -44,6 +46,15 @@ board:
 agent:
   max_attempts: 3
   max_sim_attempts: 2
+  # LLM is optional. When enabled it is used for:
+  #   * operators whose family has no A5 template (open-ended mode), and
+  #   * repairing a draft after static / device-compile failures.
+  # Families that already have a verified template keep using it unless
+  # --strategy llm is passed explicitly.
+  # Any OpenAI-compatible endpoint works, e.g. DeepSeek:
+  #   base_url: https://api.deepseek.com/v1
+  #   model: <provider model id>
+  #   export AIOP_LLM_API_KEY=...
   llm:
     enabled: false
     base_url: ""

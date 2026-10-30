@@ -185,6 +185,183 @@ Golden 参考：`test_{spec.name}.py` 中的 PyTorch CPU 实现，输入同 spec
 """
 
 
+def build_blocked_design(
+    spec: TaskSpec,
+    reasons: list[str],
+    knowledge_hits: list[dict[str, Any]],
+) -> str:
+    """Design record for an operator whose contract aiop can bind but not generate."""
+    roof = roofline(spec)
+    hits = "\n".join(
+        f"- `{h['doc']}` › {h['heading']} (score {h['score']})" for h in knowledge_hits[:5]
+    ) or "- (no knowledge hit)"
+    manifest = spec.manifest or {}
+    shapes = "\n".join(
+        f"| `{t.name}` | in | {list(t.shape)} | `{t.dtype}` | `{t.role}` |"
+        for t in spec.inputs
+    ) + "\n" + "\n".join(
+        f"| `{t.name}` | out | {list(t.shape)} | `{t.dtype}` | `{t.role}` |"
+        for t in spec.outputs
+    )
+    metadata = manifest.get("metadata_inputs") or {
+        t.name: {"values": t.values, "requires": list(t.requires)}
+        for t in spec.inputs
+        if t.values or t.requires
+    }
+    metadata_text = "\n".join(
+        f"- `{name}`: values=`{info.get('values', '')}`"
+        + (f", requires={info.get('requires')}" if info.get("requires") else "")
+        for name, info in (metadata if isinstance(metadata, dict) else {}).items()
+    ) or "- (none)"
+    reasons_text = "\n".join(f"{index}. {reason}" for index, reason in enumerate(reasons, 1))
+    present = ", ".join(f"`{name}`" for name in manifest.get("present_inputs", [])) or "(none)"
+    return f"""# {spec.name} — A5 TileLang 算子设计（未生成）
+
+> 自动生成：aiop agent · 目标 Ascend 950PR/DT（`dav-3510`, NpuArch 3510）
+> 结论：**契约已解析，但当前模板族无法覆盖该算子**；未生成 kernel，未做编译/仿真/上板。
+
+## 1. 算子契约
+
+| 项 | 值 |
+|---|---|
+| manifest 条目 | `{manifest.get('op', spec.name)}` |
+| manifest family | `{manifest.get('manifest_family', '')}` |
+| 参考 API | `{spec.formula or 'n/a'}` |
+| aiop family | `{spec.family}` |
+| 来源文件 | `{manifest.get('source', '')}` |
+| workload | `{manifest.get('workload_label', '')}` (#{manifest.get('workload_index', 0)}) |
+| dtype case | #{manifest.get('dtype_case', 0)} `{json.dumps(manifest.get('dtype_assignment', {}))}` |
+| 传入的 optional 张量 | {present} |
+
+| 张量 | 方向 | 形状 | dtype | role |
+|---|---|---|---|---|
+{shapes}
+
+## 2. 为什么不能生成
+
+{reasons_text}
+
+## 3. 元数据张量（`values` / `requires`）
+
+{metadata_text}
+
+这些张量由 manifest 生成器实例化，内容不是计算输入：`requires` 是调用方义务，
+不能在 kernel 内检查；真正的 kernel 只能读取它们。
+
+## 4. 规模与 roofline
+
+| 项 | 值 |
+|---|---|
+| 逻辑 Bytes | {roof['bytes']} B |
+| 逻辑 FLOPs | {roof['flops']} FLOPs |
+| 算术强度 | {roof['arithmetic_intensity']} FLOPs/B |
+| 瓶颈 | {roof['bottleneck']} |
+
+## 5. 补齐路径
+
+1. 在 `aiop/generation/templates.py` 增加该家族的 TileLang A5 模板（`T.Kernel` +
+   `T.SimtVF`/`T.alloc_l0c` 等已验证接口），并在 `aiop/specs.py` 注册 family。
+2. 在 `aiop/manifest.py` 的 `OP_FAMILY` 中加入 `{manifest.get('op', spec.name)}` 的映射。
+3. 在 `aiop/runtime/hardware.py` 给出该家族的 tiling 规划与容量预算。
+4. 用同一 manifest workload 行重跑 `aiop generate --manifest ... --op ... --workload ...`。
+
+## 6. 验证状态
+
+| 层级 | 结果 |
+|---|---|
+| L0 静态 | 未运行（无 kernel） |
+| L1 Lowering | 未运行 |
+| L2 设备编译 | 未运行 |
+| L3 仿真 | 未运行 |
+| L4 上板 | 未运行 |
+
+## 7. 知识库召回
+
+{hits}
+"""
+
+
+def build_open_design(
+    spec: TaskSpec,
+    reasons: list[str],
+    knowledge_hits: list[dict[str, Any]],
+    *,
+    golden_source: str,
+) -> str:
+    """Design record for the LLM open-ended path (no A5 template family)."""
+    roof = roofline(spec)
+    hits = "\n".join(
+        f"- `{h['doc']}` › {h['heading']} (score {h['score']})" for h in knowledge_hits[:5]
+    ) or "- (no knowledge hit)"
+    manifest = spec.manifest or {}
+    shapes = "\n".join(
+        f"| `{t.name}` | in | {list(t.shape)} | `{t.dtype}` | `{t.role}` |" for t in spec.inputs
+    )
+    shapes += "\n" + "\n".join(
+        f"| `{t.name}` | out | {list(t.shape)} | `{t.dtype}` | `{t.role}` |" for t in spec.outputs
+    )
+    constraints = "\n".join(f"- {reason}" for reason in reasons) or "- (none recorded)"
+    return f"""# {spec.name} — A5 TileLang 算子设计（LLM 开放模式）
+
+> 自动生成：aiop agent · 目标 Ascend 950PR/DT（`dav-3510`, NpuArch 3510）
+> 模式：**open**（无 aiop 模板 family，由 LLM 起草 kernel，门禁不放松）
+> golden 来源：`{golden_source}`
+
+## 1. 算子契约
+
+| 项 | 值 |
+|---|---|
+| manifest 条目 | `{manifest.get('op', spec.name)}` |
+| manifest family | `{manifest.get('manifest_family', '')}` |
+| 参考 API | `{spec.formula or 'n/a'}` |
+| aiop family | `{spec.family}`（无模板） |
+| workload | `{manifest.get('workload_label', '')}` (#{manifest.get('workload_index', 0)}) |
+| dtype case | #{manifest.get('dtype_case', 0)} `{json.dumps(manifest.get('dtype_assignment', {}))}` |
+
+| 张量 | 方向 | 形状 | dtype | role |
+|---|---|---|---|---|
+{shapes}
+
+## 2. 模板缺席的原因
+
+{constraints}
+
+## 3. 开放模式的边界
+
+- **不做 tiling 断言**：`Plan.variant = "llm_open"`，只固定 grid 上限（Vector 64 / Cube 32），
+  UB/L1/L0C 是否够用**由 lowering + bisheng 设备编译事后验证**，不预先承诺。
+- **门禁不放松**：语法、API 白名单、reducer 生命周期、禁打印/断言、设备编译全部照旧；
+  失败会带着编译错误回到 LLM 修复循环，而不是直接判死。
+- **golden 可能自指**：`{golden_source}`。若为 `llm-self-referenced`，L3 结果只是
+  "与该参考一致"，不是独立证据，报告里 `verified` 保持 `False`。
+- **元数据张量**：manifest 的 `values` 生成器未实现时，带 `role=metadata` 输入的算子
+  只做 L0–L2，L3 标记 `unavailable` 并写明原因。
+
+## 4. 规模与 roofline
+
+| 项 | 值 |
+|---|---|
+| 逻辑 Bytes | {roof['bytes']} B |
+| 逻辑 FLOPs | {roof['flops']} FLOPs |
+| 算术强度 | {roof['arithmetic_intensity']} FLOPs/B |
+| 瓶颈 | {roof['bottleneck']} |
+
+## 5. 验证方案
+
+| 层级 | 内容 | 通过标准 |
+|---|---|---|
+| L0 静态 | 语法 / API 白名单 / reducer 生命周期 / 禁调试插桩 | 无 error |
+| L1 Lowering | `tilelang.lower(target="ascend")` | 产出 CCE 源码 |
+| L2 设备编译 | `bisheng --npu-arch=dav-3510` | 生成 aibin |
+| L3 仿真 | golden（`{golden_source}`）+ 混合容差 | 见第 3 节的可信度说明 |
+| L4 上板 | SSH 远端 A5 运行 | 需配置 `board.host` |
+
+## 6. 知识库召回
+
+{hits}
+"""
+
+
 def _formula_text(spec: TaskSpec) -> str:
     return {
         "elementwise_unary": f"{spec.name}(x) 逐元素",
