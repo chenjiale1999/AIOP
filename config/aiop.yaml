@@ -20,7 +20,7 @@ compile:
   device_flags:
     - -D__INTEL_LLVM_COMPILER=1
     - -DSYCL_LANGUAGE_VERSION=1
-  timeout_s: 600
+  timeout_s: 1600
 
 simulation:
   backend: auto
@@ -88,4 +88,4 @@ agent:
     base_url: ""
     model: ""
     api_key_env: AIOP_LLM_API_KEY
-    timeout_s: 120
+    timeout_s: 120000
