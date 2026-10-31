@@ -3,13 +3,23 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
+from .. import ascend_ops
 from ..config import Config
 from ..runtime.hardware import Plan
 from ..specs import TaskSpec
 from . import templates
 from .llm import LLMClient
+
+
+def _normalize_llm_source(source: str, directory: Path) -> str:
+    """Rewrite known reducer aliases and record the fixes for audit."""
+    source, fixes = ascend_ops.normalize_known_aliases(source)
+    if fixes:
+        (directory / "llm_alias_fixes.json").write_text(json.dumps(fixes, indent=2), encoding="utf-8")
+    return source
 
 
 def generate(
@@ -66,6 +76,7 @@ def generate(
                 source = client.generate_kernel(
                     spec.to_dict(), design, knowledge, open_mode=open_mode
                 )
+                source = _normalize_llm_source(source, directory)
                 ast.parse(source)
                 if "def build(" not in source:
                     raise ValueError("LLM output has no build()")
@@ -89,12 +100,16 @@ def repair(
     cfg: Config,
     *,
     design: str = "",
+    knowledge: str = "",
 ) -> tuple[Path, str]:
     if cfg.agent.llm.enabled:
         client = LLMClient(cfg)
         if client.available:
             try:
-                source = client.repair_kernel(kernel_path.read_text(encoding="utf-8"), error, design)
+                source = client.repair_kernel(
+                    kernel_path.read_text(encoding="utf-8"), error, design, knowledge
+                )
+                source = _normalize_llm_source(source, kernel_path.parent)
                 ast.parse(source)
                 kernel_path.write_text(source, encoding="utf-8")
                 return kernel_path, "llm_repair"

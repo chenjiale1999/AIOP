@@ -17,7 +17,9 @@ from .config import load_config
 from .knowledge.index import default_index
 from .manifest import bind_operator, describe_operator, list_operators
 from .runtime.hardware import Plan, build_open_plan, build_plan
+from .simulation.casematrix import input_key, plan_variants
 from .simulation.runner import run_simulation
+from .simulation.testgen import write_test
 from .specs import TaskSpec, UnsupportedOperator, spec_from_requirement
 
 
@@ -76,6 +78,7 @@ def cmd_generate(args) -> int:
         draft=args.draft or None,
         search=args.search,
         search_budget=args.search_budget,
+        progress=not args.no_progress,
     )
     task_dir = cfg.workspace / result["task_id"]
     if args.json:
@@ -107,6 +110,7 @@ def cmd_campaign(args) -> int:
         strategy=args.strategy,
         search=args.search,
         search_budget=args.search_budget,
+        progress=not args.no_progress,
     )
     task_dir = cfg.workspace / result["task_id"]
     negative: dict = {"status": "skipped", "reason": "no plan"}
@@ -132,6 +136,73 @@ def cmd_campaign(args) -> int:
         print(f"note:   {note}")
     ok = result["status"] in ("success", "success_static_only")
     return 0 if ok and negative.get("status") != "failed" else 1
+
+
+def cmd_export(args) -> int:
+    """Write a single-file, path-independent test with the kernel embedded."""
+    cfg = load_config(args.config or None)
+    task_dir, spec, plan = _load_task(args.task)
+    kernel = task_dir / f"{spec.name}.py"
+    if not kernel.is_file():
+        print(f"kernel not found: {kernel}", file=sys.stderr)
+        return 1
+    data: dict = {}
+    result_path = task_dir / "result.json"
+    if result_path.is_file():
+        data = json.loads(result_path.read_text(encoding="utf-8"))
+    golden_override = None
+    if data.get("golden_source") in ("llm-self-referenced", "agent-self-referenced"):
+        ref = task_dir / "golden_ref.py"
+        if ref.is_file():
+            text = ref.read_text(encoding="utf-8")
+            prefix = "def golden_body():\n"
+            if text.startswith(prefix):
+                golden_override = text[len(prefix) :]
+    kernel_text = kernel.read_text(encoding="utf-8")
+    # Only deterministic-template kernels can be re-rendered for other
+    # shape/dtype contracts; LLM/draft kernels keep their single bound case.
+    enumerate_variants = (
+        "deterministic template" in kernel_text[:1500]
+        or data.get("mode") == "template"
+        or data.get("generator") == "template"
+    )
+    variants = plan_variants(
+        spec,
+        plan,
+        kernel_text,
+        golden_override=golden_override,
+        enumerate_variants=enumerate_variants,
+    )
+    out_dir = Path(args.out) if args.out else task_dir / "export"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    test = write_test(
+        spec,
+        plan,
+        out_dir,
+        cann_home=cfg.cann.home,
+        device_flags=cfg.compile.device_flags,
+        warmup=cfg.simulation.warmup,
+        repeats=cfg.simulation.repeats,
+        tilelang_repo=cfg.paths.tilelang_repo,
+        golden_override=golden_override,
+        kernel_source=kernel_text,
+        variants=variants,
+    )
+    available = sum(1 for variant in variants if variant.available)
+    unique = len({input_key(variant.spec) for variant in variants})
+    print(f"test: {test}")
+    print(f"size: {test.stat().st_size} bytes")
+    print(f"variants: {available}/{len(variants)} (shape/dtype combos: {unique})")
+    for variant in variants:
+        if not variant.available:
+            print(
+                f"warning: workload={variant.workload} dtype_case={variant.dtype_case} "
+                f"unavailable: {variant.error}",
+                file=sys.stderr,
+            )
+    print(f"run:  python {test.name} --device npu")
+    print(f"copy: scp {test} <user>@<a5-host>:/tmp/")
+    return 0
 
 
 def cmd_check(args) -> int:
@@ -304,6 +375,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--draft", default="", help="draft kernel path (default <task>/draft.py)")
     p.add_argument("--search", action="store_true", help="bounded plan search before generation")
     p.add_argument("--search-budget", type=int, default=4, help="number of candidate plans to gate")
+    p.add_argument("--no-progress", action="store_true", help="do not stream stage progress to stderr")
     p.add_argument("--simulate", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--board", action="store_true")
     p.add_argument("--force-board", action="store_true")
@@ -329,6 +401,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--search", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--search-budget", type=int, default=4)
+    p.add_argument("--no-progress", action="store_true", help="do not stream stage progress to stderr")
     p.add_argument("--simulate", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--board", action="store_true")
     p.add_argument("--out", default="", help="optional campaign report path")
@@ -342,6 +415,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workload", default=0, type=_workload_selector)
     p.add_argument("--dtype-case", type=int, default=0)
     p.set_defaults(func=cmd_prompt)
+
+    p = sub.add_parser(
+        "export",
+        help="write a standalone test_<op>.py with the kernel embedded",
+    )
+    p.add_argument("task", help="task id or workspace/<task>")
+    p.add_argument("--out", default="", help="output directory (default <task>/export)")
+    p.set_defaults(func=cmd_export)
 
     p = sub.add_parser("check", help="static checks for an existing task")
     p.add_argument("task")

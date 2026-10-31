@@ -7,17 +7,64 @@ feedback. Every finding has a stable rule id used by the repair loop.
 from __future__ import annotations
 
 import ast
-import difflib
 import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .. import ascend_ops
 from ..config import Config
 from ..runtime.hardware import ALIGN_BYTES, UB_BUDGET_BYTES, check_plan
-from ..runtime import tilelang_a5
 from ..specs import DTYPE_BYTES, TaskSpec
+
+# A3-era (tilelang_ascend) names that the merged A5 main repo no longer exports.
+# Value is the A5 replacement; names missing from A3_RENAMED_OPS and listed in
+# A3_UNAVAILABLE_OPS have no A5 equivalent ("A5架构暂无", see knowledge/12).
+A3_RENAMED_OPS = {
+    "printf": "T.print",
+    "mma": "T.gemm",
+    "gemm_v0": "T.gemm",
+    "alloc_L1": "T.alloc_l1",
+    "alloc_L0A": "T.alloc_l0a",
+    "alloc_L0B": "T.alloc_l0b",
+    "alloc_L0C": "T.alloc_l0c",
+    "alloc_ub": "T.alloc_shared",
+    "set_cross_flag": "T.ascend_cross_core_set_flag",
+    "wait_cross_flag": "T.ascend_cross_core_wait_flag",
+    "set_flag": "T.ascend_set_flag",
+    "wait_flag": "T.ascend_wait_flag",
+    "barrier_all": 'T.ascend_pipe_barrier("PIPE_ALL")',
+    "pipe_barrier": "T.ascend_pipe_barrier",
+}
+A3_UNAVAILABLE_OPS = {
+    "sync_all",
+    "dump_tensor",
+    "reinterpretcast",
+    "set_deq_scale",
+    "shmem_put_nbi",
+    "shmem_ub_put_nbi",
+    "shmem_get_nbi",
+    "shmem_ub_get_nbi",
+}
+A3_NAMESPACES = {
+    "T.tile.": "A3 的 T.tile.* 命名空间已移除；SIMD 改用 T.simd.*，高层运算改用 T.Parallel/表达式",
+    "T.ascend.": "A3 的 T.ascend.* 命名空间已移除；改用 A5 的 T.ascend_* 平铺接口",
+}
+
+
+def _a3_alias_message(dotted: str) -> str | None:
+    """Return a standardization message when ``dotted`` is an A3 legacy name."""
+    for prefix, message in A3_NAMESPACES.items():
+        if dotted.startswith(prefix):
+            return message
+    if dotted.count(".") == 1:
+        attr = dotted.split(".", 1)[1]
+        if attr in A3_RENAMED_OPS:
+            return f"A3 残留别名，A5 请改用 {A3_RENAMED_OPS[attr]}"
+        if attr in A3_UNAVAILABLE_OPS:
+            return "A3 专属接口，A5架构暂无等价实现（见 knowledge/12-op-compatibility.md）"
+    return None
 
 
 @dataclass
@@ -114,29 +161,34 @@ def check_api(kernel_path: Path, cfg: Config) -> Report:
     source = kernel_path.read_text(encoding="utf-8")
     tree = ast.parse(source)
     try:
-        snapshot = tilelang_a5.api_snapshot(cfg)
+        scope = ascend_ops.load_scope(cfg)
     except Exception as exc:  # noqa: BLE001 - API lint degrades to a warning
-        report.warn("API000", f"cannot introspect tilelang API: {exc}")
+        report.warn("API000", f"cannot build the Ascend op scope: {exc}")
         return report
-    language = set(snapshot["language"])
-    simd = set(snapshot["simd"])
-    unknown: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute):
-            name = _dotted(node)
-            if name.startswith("T.simd."):
-                attr = name.split(".", 2)[2].split(".")[0]
-                if attr not in simd:
-                    unknown.append(name)
-            elif name.startswith("T.") and name.count(".") == 1:
-                attr = name.split(".", 1)[1]
-                if attr not in language and attr not in {"prim_func"}:
-                    unknown.append(name)
-    if unknown:
-        for name in sorted(set(unknown)):
-            suggestion = difflib.get_close_matches(name.split(".")[-1], language, n=1)
+    report.metadata["scope"] = scope.to_dict()
+    for violation in ascend_ops.scan_tree(tree, scope, ascend_ops.ascend_aliases(tree)):
+        # Normalize any import alias back to T for the A3 compatibility map.
+        normalized = "T." + violation.op.split(".", 1)[1]
+        alias = _a3_alias_message(normalized)
+        if alias is not None:
+            report.error("API003", f"A3 legacy API `{violation.op}`: {alias}")
+        elif violation.kind == "namespace":
+            report.error("API004", f"`{violation.op}` is outside the Ascend dialect scope: {violation.detail}")
+        elif violation.kind == "simd_unknown":
+            suggestion = scope.suggest(violation.op.rsplit(".", 1)[-1], scope.simd)
+            hint = f"; did you mean T.simd.{suggestion[0]}?" if suggestion else ""
+            report.error(
+                "API004",
+                f"`{violation.op}` is not defined in {scope.language_dir}/simd.py{hint}",
+            )
+        else:
+            suggestion = scope.suggest(violation.op.split(".", 1)[1], scope.declared, n=1)
             hint = f"; did you mean T.{suggestion[0]}?" if suggestion else ""
-            report.error("API001", f"unknown Ascend dialect API `{name}`{hint}")
+            report.error(
+                "API001",
+                f"unknown Ascend dialect API `{violation.op}`{hint}; "
+                "legal ops are the definitions under tilelang/ascend/language",
+            )
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and _dotted(node.func) == "T.Kernel":
             if any(kw.arg == "threads" for kw in node.keywords):
@@ -195,10 +247,57 @@ def check_semantics(spec: TaskSpec, plan, kernel_path: Path) -> Report:
     if not (alloc == init == final):
         report.error(
             "SEM001",
-            f"reducer lifecycle mismatch: alloc={alloc} init={init} finalize={final}",
+            f"reducer lifecycle mismatch: alloc={alloc} init={init} finalize={final}. "
+            "Required lifecycle: acc = T.alloc_reducer(shape, dtype, op='sum'|'max'|'min'); "
+            "T.reducer_init(acc); T.reducer_update(acc[i], value); "
+            "out = T.alloc_fragment(shape, dtype); T.finalize_reducer(acc, out); read out[i]. "
+            "There is no T.reduce_init / T.reduce_finalize / T.reducer_finalize / T.alloc_reduce.",
         )
     if spec.family in ("row_reduce", "softmax", "rmsnorm", "layernorm") and alloc == 0:
         report.error("SEM002", "row-wise family must use T.alloc_reducer")
+    reducer_vars = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and _dotted(node.value.func) == "T.alloc_reducer"
+        ):
+            reducer_vars.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    if reducer_vars:
+        parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+        reduce_ops = {
+            "T.reduce",
+            "T.reduce_sum",
+            "T.reduce_max",
+            "T.reduce_min",
+            "T.reduce_abssum",
+            "T.reduce_absmax",
+            "T.reduce_bitand",
+            "T.reduce_bitor",
+            "T.reduce_bitxor",
+        }
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and _dotted(node.func) in reduce_ops:
+                if len(node.args) >= 2 and isinstance(node.args[1], ast.Name) and node.args[1].id in reducer_vars:
+                    report.error(
+                        "SEM018",
+                        f"`{_dotted(node.func)}` out must be a fragment/buffer, not reducer "
+                        f"`{node.args[1].id}`; contribute with T.reducer_update instead",
+                    )
+            if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id in reducer_vars:
+                parent = parents.get(node)
+                allowed = (
+                    isinstance(parent, ast.Call)
+                    and _dotted(parent.func) == "T.reducer_update"
+                    and bool(parent.args)
+                    and parent.args[0] is node
+                )
+                if not allowed:
+                    report.error(
+                        "SEM018",
+                        f"reducer `{node.value.id}` cannot be read or assigned directly; "
+                        "T.finalize_reducer(acc, out) and read `out` instead",
+                    )
     for forbidden, rule in (
         ("T.print", "SEM003"),
         ("T.device_assert", "SEM004"),

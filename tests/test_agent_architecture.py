@@ -181,14 +181,15 @@ def test_generated_runner_has_a_case_matrix_and_keeps_legacy_api():
         plan,
         {"cann_home": "/x", "device_flags": [], "warmup": 0, "repeats": 1},
         "/repo",
+        kernel_source="def build():\n    return None\n",
     )
     ast.parse(source)
-    assert "CASE_SPECS" in source
+    assert "CASE_SPECS_AIOP" in source
     for name in ("normal", "zeros", "ones", "large", "tiny"):
-        assert f'"{name}"' in source
-    assert "def make_inputs(device, case=None):" in source
+        assert f"'{name}'" in source
+    assert "def make_inputs_aiop(case, device):" in source
     assert "[PRECISION_PASS]" in source
-    assert "golden(" in source
+    assert "golden_aiop_0(" in source
 
     # exp() must not run the "large" case: exp(100) overflows both sides.
     exp = TaskSpec(
@@ -202,8 +203,9 @@ def test_generated_runner_has_a_case_matrix_and_keeps_legacy_api():
         build_plan(exp),
         {"cann_home": "/x", "device_flags": [], "warmup": 0, "repeats": 1},
         "/repo",
+        kernel_source="def build():\n    return None\n",
     )
-    assert '"large"' not in exp_src
+    assert "'large'" not in exp_src
 
 
 def test_negative_probe_rejects_forbidden_debug_api(tmp_path):

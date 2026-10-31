@@ -133,16 +133,6 @@ def build_entry(module: Any, entry: str = "build") -> Any:
     return func
 
 
-def api_snapshot(cfg: Config) -> dict[str, list[str]]:
-    """Collect legal Ascend dialect names for static API linting."""
-    tilelang = bootstrap(cfg)
-    import tilelang.ascend.language as T
-
-    names = {name for name in dir(T) if not name.startswith("_")}
-    simd = {name for name in dir(T.simd) if not name.startswith("_")} if hasattr(T, "simd") else set()
-    return {"language": sorted(names), "simd": sorted(simd)}
-
-
 def environment_probe(cfg: Config) -> dict[str, Any]:
     """Report what this machine can actually execute (never fake capability)."""
     result: dict[str, Any] = {

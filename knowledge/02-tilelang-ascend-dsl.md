@@ -201,16 +201,24 @@ T.ascend_get_buf(buf) / T.ascend_rls_buf(buf)
 | 谓词/掩码 | `pset`, `pge`, `update_mask`, `pand`, `por`, `pxor`, `pnot`, `psel`, `ppack`, `punpack`, `pintlv`, `pdintlv` |
 | 谓词访存 | `pld(addr, dist=...)`, `pst(addr, src, dist=...)` |
 | 向量访存 | `vld(addr, post_inc=...)`, `vld2(addr, off=...)`, `vsts(addr, src, mask, extent=...)`, `vsstb(src, base, stride, ...)` |
+| 访存扩展 | `vgather2(base, index, mask=None)`、`vgatherb(base, index, mask=None)`（32B 块索引）、`vscatter(src, base, index, mask=None)` |
 | 算术 | `vadd`, `vaddc`, `vsub`, `vsubc`, `vaddcs`, `vsubcs`, `vmul`, `vmull`, `vmula`, `vmadd`, `vaxpy`, `vdiv` |
-| 位/移位 | `vand`, `vor`, `vxor`, `vnot`, `vshl`, `vshr` |
-| 数学 | `vexp`, `vln`, `vsqrt`, `vabs`, `vneg`, `vrelu`, `vlrelu`, `vprelu` |
-| 比较 | `vcmp(op=...)`, `vcmps(op=...)` |
+| 标量广播算术 | `vadds`, `vmuls`, `vmaxs`, `vmins`（第二操作数为标量，`mode="MODE_ZEROING"`） |
+| 位/移位 | `vand`, `vor`, `vxor`, `vnot`, `vshl`, `vshr`, `vshls`, `vshrs`（`*s` 为标量移位） |
+| 数学 | `vexp`, `vln`, `vsqrt`, `vabs`, `vneg`, `vrelu`, `vlrelu`, `vprelu`, `vabsdif`（`|a-b|`）、`vexpdif`（`exp(a-b)`） |
+| 比较/选择 | `vcmp(op=...)`, `vcmps(op=...)`, `vsel(src0, src1, mask)`, `vselr(src, index)` |
 | 归约/广播 | `vcpadd`, `vcadd`, `vcmax`, `vcmin`, `vcgadd`, `vcgmax`, `vcgmin`, `vdup`, `vdupv`, `vci` |
+| 打包/解包 | `vpack(src, part=0)`（u32→u16、u16→u8）、`vunpack(src, part=0)`（u8→u16、u16→u32） |
 | 直方图 | `dhistv2`, `chistv2` |
-| 其他 | `vsqz`, `vusqz`, `alloc_var`, `alloc_local` |
+| 其他 | `vsqz`, `vusqz`, `vmin`, `alloc_var`, `alloc_local` |
 
 `vld`/`vsts`/`pld`/`pst` 没有独立 `off` 参数，位移写进地址；`vld2` 仍保留 `off`。
 完整清单见 `tilelang/ascend/language/simd.py`。
+
+**A3 残留注意**：A3 的 `T.tile.*` 命名空间在 A5 已移除，对应 `T.simd.*`；
+`T.printf`、`alloc_L1/L0A/L0B/L0C`、`alloc_ub`、`T.ascend.*` 同样不存在。
+逐项对照与「A5架构暂无」清单见
+[12-op-compatibility.md](12-op-compatibility.md)。
 
 ## 9. 调试与随机数
 
@@ -224,9 +232,15 @@ with T.SimtVF(threads=128):
     T.rng_rand_float(dist="normal")
 ```
 
-## 10. 写错就会失败的四条
+## 10. 写错就会失败的五条
 
 1. `T.Kernel(n, threads=128)` → `TypeError`；线程域只能写在 `T.SimtVF(threads=...)`。
 2. 多维 grid → 不支持；自己算 tile 索引。
 3. L1 输入 GEMM 改动 `transpose_A/B` → 走错 lowering；先确认所选路径。
 4. 在 `T.SimtVF` 里手动加 `__syncthreads` 等价物 → 多余；编译器已按数据流插入。
+5. 写了 `import tilelang.ascend.language as T` 后，`T.<op>` 必须是该目录声明面成员，
+   `T.simd.<op>` 必须在 `simd.py` 中定义；否则静态检查按 `API001`（未知）、
+   `API003`（A3 别名）、`API004`（越界命名空间）拦截。逐项签名查
+   [13-ascend-op-reference.md](13-ascend-op-reference.md)。
+   reducer 只能 `alloc_reducer → reducer_init → reducer_update → finalize_reducer(acc, out)`，
+   把 reducer 当作 `T.reduce_*` 的 out 或直接读 `acc[i]` 会被 `SEM018` 拒绝。

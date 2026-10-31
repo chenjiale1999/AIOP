@@ -209,6 +209,13 @@ class PrecisionSpec:
     max_abs_error: float
     matched_ratio: float
 
+    def __post_init__(self) -> None:
+        # Values loaded from YAML/JSON may be strings such as "1e-05".
+        self.atol = float(self.atol)
+        self.rtol = float(self.rtol)
+        self.max_abs_error = float(self.max_abs_error)
+        self.matched_ratio = float(self.matched_ratio)
+
     def to_dict(self) -> dict[str, float]:
         return dataclasses.asdict(self)
 

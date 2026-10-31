@@ -370,9 +370,14 @@ DRAFT_RULES = """\
 - 模块必须提供 `def build()`，返回一个 `@T.prim_func`。
 - `T.Kernel(blocks)` 只接受**一维** grid，**不允许** `threads=`；线程域只能写在 `T.SimtVF(threads=...)`。
 - 片上内存：`T.alloc_shared`（UB）、`T.alloc_l1` / `T.alloc_l0a` / `T.alloc_l0b` / `T.alloc_l0c`（Cube 路径）。
+- A3 残留别名禁用：`T.printf` / `T.tile.*` / `T.ascend.*` / `alloc_L1|L0A|L0B|L0C|ub`；
+  A5 分别用 `T.print`（仅调试，交付版仍禁止打印）/ `T.simd.*` / `T.ascend_*` /
+  `alloc_l1|l0a|l0b|l0c|alloc_shared`。
 - 归约只能用 `T.alloc_reducer(op="sum"|"max"|"min")` + `reducer_init` / `reducer_update` / `finalize_reducer`，
   三者数量和顺序必须配对。
 - 禁止 `T.print` / `T.device_assert` / `T.annotate_unlimit_memory`；禁止动态循环边界。
+- 合法 op 只允许 `tilelang.ascend.language` 声明面；逐项签名与约束查
+  `knowledge/13-ascend-op-reference.md`，越界调用会被 `API001/API003/API004` 拒绝。
 - UB 预算 208 KiB（物理 248 KiB，含 SIMT 上下文），L1 512 KiB，L0C 256 KiB；grid 上限 Vector 64 / Cube 32。
 - 张量签名必须与 `spec.yaml` 里声明的形状、dtype **逐字一致**（测试会按原样传参）。
 

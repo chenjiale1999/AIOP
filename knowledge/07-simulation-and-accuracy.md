@@ -95,7 +95,7 @@ pass = matched_ratio >= required_ratio and max_abs_error <= max_abs_limit
 
 | 手段 | 用法 | 注意 |
 |---|---|---|
-| `T.print` / `T.printf` | 打印标量/少量元素 | 改变性能与寄存器压力 |
+| `T.print` | 打印 buffer / 标量表达式 / 纯消息 | 改变性能与寄存器压力；A3 的 `T.printf` 为 A5架构暂无（无格式化变参），统一改用 `T.print(obj, msg=...)` |
 | `T.device_assert` | 越界/条件断言 | 最终版本移除 |
 | `TL_LOWER_TRACE=1` | 逐 pass IR、codegen 源码、HTML diff | 定位 lowering 拒绝点 |
 | `npusim report -g vf` | VF IPC、周期分解 | 模型数据，不等于真机时延 |

@@ -33,8 +33,17 @@ documentation and [tilelang-build](../tilelang-build/SKILL.md).
 - [Profiling recipes](references/profiling.md): device timing, regression tools,
   generated-source experiments, and operation cycle measurements with npusim.
 
+- [A3 → A5 OP compatibility](references/op-compatibility.md): the authoritative
+  rename map from the legacy `tilelang_ascend` front-end (`T.tile.*`,
+  `T.ascend.*`, `alloc_L1/ub`, `T.printf`, ...) to the merged A5 surface, plus
+  the 「A5架构暂无」 list and the legacy-name rules enforced by `API003`.
+
 For a suspected compiler defect, preserve the smallest failing kernel together
 with its generated source or lowering trace.
+
+Do not emit A3 spellings. The A5 entry point is
+`import tilelang.ascend.language as T`; `T.tile`, `T.ascend`, `T.printf` and
+`alloc_L1/L0A/L0B/L0C/ub` do not exist there.
 
 ---
 

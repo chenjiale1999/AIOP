@@ -14,33 +14,85 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from .. import ascend_ops
 from ..config import Config
 
-SYSTEM = """You are a TileLang Ascend 950 (dav-3510) kernel engineer.
+REDUCER_CONTRACT = """\
+REDUCER CONTRACT — this is the only legal lifecycle:
+    acc = T.alloc_reducer((rows,), "float32", op="sum")   # op: sum | max | min
+    T.reducer_init(acc)
+    for r, i in T.Parallel(rows, tile):
+        T.reducer_update(acc[r], value)
+    out = T.alloc_fragment((rows,), "float32")
+    T.finalize_reducer(acc, out)
+    # read out[r]; the reducer handle acc cannot be read or assigned.
+There is NO T.reduce_init, T.reduce_update, T.reduce_finalize,
+T.reducer_finalize, T.finalize_reduce or T.alloc_reduce.
+"""
+
+SYSTEM_TEMPLATE = """You are a TileLang Ascend 950 (dav-3510) kernel engineer.
 Write a single self-contained Python module with:
 
     def build(): -> @T.prim_func
 
 Rules:
 - import tilelang and tilelang.ascend.language as T only.
+- Never use A3 aliases (T.printf, T.tile.*, T.ascend.*, alloc_L1/L0A/L0B/L0C/ub);
+  use T.print only for debugging, T.simd.*, T.ascend_*, and
+  alloc_l1/l0a/l0b/l0c/alloc_shared instead.
 - T.Kernel takes a ONE-dimensional grid and no threads argument.
 - thread domains live in T.SimtVF(threads=...); SIMD in T.SimdVF().
-- reducer ops are limited to sum/max/min with explicit init/finalize.
 - No torch, file IO, prints, asserts, or dynamic loop bounds.
 - Follow the supplied design (tiling, memory tier, dtype) exactly.
-Return only the module code, no markdown fences."""
+
+{allowlist}
+
+{reducer}
+
+Any T.<op> or T.simd.<op> outside the allowlist is rejected by the static gate
+(API001/API003/API004). Return only the module code, no markdown fences."""
+
+
+def _allowlist_text(cfg: Config) -> str:
+    """Render the directory-derived legal op surface for the prompt."""
+    try:
+        scope = ascend_ops.load_scope(cfg)
+    except Exception:  # noqa: BLE001 - keep the LLM path usable without tilelang
+        return (
+            "AUTHORITATIVE API ALLOWLIST unavailable (tilelang import failed). "
+            "Use only the ops named in the supplied design and knowledge."
+        )
+    if scope.source != "runtime":
+        # A partial static surface would wrongly tell the model that common ops
+        # do not exist; ask it to follow the design instead of guessing.
+        return (
+            "AUTHORITATIVE API ALLOWLIST unavailable (tilelang runtime import failed). "
+            "Use only the ops named in the supplied design and knowledge."
+        )
+    top = ", ".join(sorted(scope.declared))
+    simd = ", ".join(sorted(scope.simd))
+    return (
+        f"AUTHORITATIVE API ALLOWLIST — only these T.* names exist ({len(scope.declared)}):\n"
+        f"{top}\n\n"
+        f"T.simd.* — only these names exist ({len(scope.simd)}):\n{simd}"
+    )
+
+
+def build_system_prompt(cfg: Config) -> str:
+    return SYSTEM_TEMPLATE.format(allowlist=_allowlist_text(cfg), reducer=REDUCER_CONTRACT)
 
 
 class LLMClient:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg.agent.llm
         self.api_key = os.environ.get(self.cfg.api_key_env, "")
+        self.system = build_system_prompt(cfg)
 
     @property
     def available(self) -> bool:
         return bool(self.cfg.enabled and self.cfg.base_url and self.cfg.model)
 
-    def complete(self, prompt: str, system: str = SYSTEM, timeout: int | None = None) -> str:
+    def complete(self, prompt: str, system: str | None = None, timeout: int | None = None) -> str:
         if not self.available:
             raise RuntimeError("LLM is not configured")
         url = self.cfg.base_url.rstrip("/") + "/chat/completions"
@@ -48,7 +100,7 @@ class LLMClient:
             "model": self.cfg.model,
             "temperature": 0.2,
             "messages": [
-                {"role": "system", "content": system},
+                {"role": "system", "content": system or self.system},
                 {"role": "user", "content": prompt},
             ],
         }
@@ -91,6 +143,7 @@ class LLMClient:
             f"DESIGN:\n{design}\n\n"
             f"KNOWLEDGE:\n{knowledge}\n"
             f"{extra}\n"
+            f"{REDUCER_CONTRACT}\n"
             "Output only the Python module."
         )
         return _strip_fences(self.complete(prompt))
@@ -117,10 +170,14 @@ class LLMClient:
         body = _strip_fences(self.complete(prompt))
         return _normalize_body(body)
 
-    def repair_kernel(self, source: str, error: str, design: str) -> str:
+    def repair_kernel(self, source: str, error: str, design: str, knowledge: str = "") -> str:
         prompt = (
-            "The following generated kernel failed validation. Fix the root cause, keep the design.\n\n"
-            f"DESIGN:\n{design}\n\nERROR:\n{error[-6000:]}\n\nSOURCE:\n{source[-12000:]}\n\n"
+            "The following generated kernel failed validation. Fix the root cause, keep the design.\n"
+            "Do not invent API names: use only the allowlist in the system message.\n\n"
+            f"DESIGN:\n{design}\n\n"
+            f"KNOWLEDGE:\n{knowledge}\n\n"
+            f"{REDUCER_CONTRACT}\n"
+            f"ERROR:\n{error[-6000:]}\n\nSOURCE:\n{source[-12000:]}\n\n"
             "Output only the full corrected Python module."
         )
         return _strip_fences(self.complete(prompt))

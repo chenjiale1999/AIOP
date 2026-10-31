@@ -45,6 +45,8 @@ tools:
 - 禁止：`torch`/`numpy`/IO import、`T.Kernel(threads=)`、多维 grid、动态边界、
   `T.print`/`T.device_assert` 留在交付代码、`T.annotate_unlimit_memory` 当修复。
 - reducer：`alloc_reducer` / `reducer_init` / `reducer_update` / `finalize_reducer` 数量与作用域匹配。
+- 合法 op 仅限 `tilelang.ascend.language` 声明面；签名/参数/约束/示例逐项查
+  `knowledge/13-ascend-op-reference.md`。越界命名空间或未知 op 会被 `API001/API003/API004` 拦截。
 - 尾部：整 tile 用 UB-staged；否则 guarded（`idx<N` 或 `row<BATCH`）。
 - GEMM：`transpose_B=True`、首 K 步 `clear_accum=True`、`T.Persistent`。
 - bf16/fp16 的 relu/abs/maximum/minimum 走 fp32 计算再 cast，避免 CCE 重载歧义。

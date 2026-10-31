@@ -22,6 +22,7 @@ from ..checks.static import run_static
 from ..config import Config, load_config
 from ..generation.generator import generate, repair
 from ..generation.llm import LLMClient
+from ..generation.templates import TEMPLATE_NAME
 from ..knowledge.index import KnowledgeIndex, default_index
 from ..runtime.hardware import Plan, build_open_plan, build_plan, roofline
 from ..simulation.runner import SimResult, run_simulation
@@ -31,6 +32,7 @@ from .audit import build_lowering_audit, write_lowering_audit
 from .contract import build_contract, write_contract
 from .design import build_blocked_design, build_design, build_open_design
 from .evidence import EvidenceStore, diagnose, write_diagnosis
+from .progress import ProgressReporter
 from .search import SearchController
 from .skills import SkillRegistry, write_context_manifest, write_skill_lock
 from .state import TaskState
@@ -142,6 +144,7 @@ class OperatorAgent:
         draft: str | None = None,
         search: bool = False,
         search_budget: int = 4,
+        progress: bool = False,
     ) -> dict[str, Any]:
         started = time.time()
         task_id = task_id or task_id_for(spec)
@@ -159,6 +162,16 @@ class OperatorAgent:
         state.save(task_dir / "state.json")
         spec.save(task_dir / "spec.yaml")
         evidence = EvidenceStore(task_dir, task_id)
+        reporter = ProgressReporter(task_dir, task_id, enabled=progress)
+        reporter.emit(
+            "task",
+            "start",
+            op=spec.name,
+            family=spec.family,
+            strategy=strategy,
+            simulate=simulate,
+            board=board,
+        )
 
         knowledge_hits = self.kb.search(
             f"{spec.family} {spec.name} tiling 内存 精度 性能", k=5
@@ -167,6 +180,7 @@ class OperatorAgent:
 
         # Stage 1: design
         state.enter("design")
+        reporter.emit("design", "start")
         mode = "template"
         golden_source = "aiop-builtin"
         golden_override: str | None = None
@@ -185,6 +199,7 @@ class OperatorAgent:
                     state=state,
                     knowledge_hits=knowledge_hits,
                     started=started,
+                    reporter=reporter,
                 )
             # Open-ended mode: no template family, so an external writer owns
             # the tiling — the LLM directly, or a draft file from an IDE agent.
@@ -222,12 +237,21 @@ class OperatorAgent:
                 (task_dir / "golden_ref.py").write_text(
                     "def golden_body():\n" + golden_override + "\n", encoding="utf-8"
                 )
+        reporter.emit(
+            "design",
+            "done",
+            mode=mode,
+            variant=plan.variant,
+            blocks=plan.blocks,
+            ub_used=plan.ub_used,
+        )
         (task_dir / "DESIGN.md").write_text(design, encoding="utf-8")
         state.complete("design")
 
         artifacts: dict[str, str] = {
             "design": str(task_dir / "DESIGN.md"),
             "spec": str(task_dir / "spec.yaml"),
+            "run_log": str(reporter.path),
         }
 
         # Stage 1b: freeze the task contract and the skill bundle it relies on.
@@ -266,6 +290,13 @@ class OperatorAgent:
                 },
                 artifacts=[artifacts["contract"], artifacts["skill_lock"]],
             )
+            reporter.emit(
+                "contract",
+                "frozen",
+                hash=contract.contract_hash,
+                skills=len(skill_bundle.skills),
+                obligations=len(skill_bundle.obligations),
+            )
         except Exception as exc:  # noqa: BLE001 - bookkeeping must not kill a run
             evidence.record(
                 "design",
@@ -274,9 +305,11 @@ class OperatorAgent:
                 category="generator",
                 facts={"error": f"{type(exc).__name__}: {exc}"},
             )
+            reporter.emit("contract", "failed", error=f"{type(exc).__name__}: {exc}")
 
         # Stage 1c: bounded plan search (opt-in; deterministic templates only).
         if search and mode == "template":
+            reporter.emit("search", "start", budget=search_budget)
             try:
                 controller = SearchController(self.cfg)
                 chosen_plan, frontier = controller.search(
@@ -286,6 +319,7 @@ class OperatorAgent:
                     design=design,
                     knowledge=knowledge_context,
                     budget=search_budget,
+                    on_event=lambda message: reporter.emit("search", message),
                 )
                 artifacts["frontier"] = str(frontier)
                 if chosen_plan.to_dict() != plan.to_dict():
@@ -307,6 +341,12 @@ class OperatorAgent:
                     facts={"chosen": plan.to_dict(), "frontier": str(frontier)},
                     artifacts=[str(frontier)],
                 )
+                reporter.emit(
+                    "search",
+                    "done",
+                    chosen=f"{plan.variant} blocks={plan.blocks} tile={plan.tile}",
+                    frontier=str(frontier),
+                )
             except Exception as exc:  # noqa: BLE001 - fall back to the base plan
                 evidence.record(
                     "search",
@@ -315,6 +355,7 @@ class OperatorAgent:
                     category="search",
                     facts={"error": f"{type(exc).__name__}: {exc}"},
                 )
+                reporter.emit("search", "failed", error=f"{type(exc).__name__}: {exc}")
 
         static_report: StaticReport | None = None
         compile_result: CompileResult | None = None
@@ -330,6 +371,13 @@ class OperatorAgent:
         current_plan = plan
         pending_repair: str | None = None
         for attempt in range(1, self.cfg.agent.max_attempts + 1):
+            reporter.emit(
+                "generate",
+                "start",
+                attempt=attempt,
+                max_attempts=self.cfg.agent.max_attempts,
+                plan=current_plan.variant,
+            )
             try:
                 if pending_repair is not None and self._llm_client() is not None:
                     kernel_path, generator_name = repair(
@@ -339,6 +387,7 @@ class OperatorAgent:
                         pending_repair,
                         self.cfg,
                         design=design,
+                        knowledge=knowledge_context,
                     )
                 else:
                     kernel_path, generator_name = generate(
@@ -370,8 +419,10 @@ class OperatorAgent:
                     f"- mode: generate\n- classification: generator_error\n- error: {error}",
                 )
                 compile_result = CompileResult(ok=False, error=error, category="generator")
+                reporter.emit("generate", "failed", error=error)
                 break
             pending_repair = None
+            reporter.emit("generate", "done", source=generator_name)
             evidence.record(
                 "generate",
                 "kernel_source",
@@ -394,6 +445,7 @@ class OperatorAgent:
                     repeats=self.cfg.simulation.repeats,
                     tilelang_repo=self.cfg.paths.tilelang_repo,
                     golden_override=golden_override,
+                    enumerate_variants=(mode == "template"),
                 )
             static_report = run_static(spec, current_plan, kernel_path, self.cfg)
             (task_dir / "static_report.json").write_text(
@@ -408,6 +460,7 @@ class OperatorAgent:
                     facts={"attempt": attempt, "rules": static_rules},
                     artifacts=[str(task_dir / "static_report.json")],
                 )
+                reporter.emit("static", "passed", rules=",".join(static_rules) or "none")
             else:
                 evidence.record(
                     "static",
@@ -423,6 +476,7 @@ class OperatorAgent:
                     },
                     artifacts=[str(task_dir / "static_report.json")],
                 )
+                reporter.emit("static", "failed", rules=",".join(static_rules) or "none")
             if not static_report.ok:
                 error = "; ".join(f.message for f in static_report.findings if f.severity == "error")
                 attempts.append({"attempt": attempt, "stage": "static", "ok": False, "error": error})
@@ -433,17 +487,32 @@ class OperatorAgent:
                 )
                 if self._llm_client() is not None:
                     pending_repair = error
+                    reporter.emit("repair", "scheduled", reason="static", error=error)
                 elif strategy == "draft":
                     self._write_fix_request(
                         task_dir, spec, current_plan, "static", error, static_report
                     )
+                    reporter.emit("draft", "fix_request", phase="static")
                     break
                 else:
                     current_plan = _fallback_plan(spec, current_plan, attempt + 1)
+                    reporter.emit(
+                        "plan",
+                        "fallback",
+                        variant=current_plan.variant,
+                        blocks=current_plan.blocks,
+                    )
                 continue
 
             state.enter("compile")
+            reporter.emit("compile", "start", timeout_s=self.cfg.compile.timeout_s)
             compile_result = compile_kernel(kernel_path, task_dir, self.cfg)
+            reporter.emit(
+                "compile",
+                "passed" if compile_result.ok else "failed",
+                category=compile_result.category,
+                elapsed_s=round(compile_result.elapsed_s, 2),
+            )
             attempts.append(
                 {
                     "attempt": attempt,
@@ -479,19 +548,89 @@ class OperatorAgent:
                 state.complete("compile")
                 break
             if compile_result.category in ("cann_too_old", "toolchain_host_headers"):
+                reporter.emit("compile", "stop", category=compile_result.category)
                 break
             # keep the failing source for audit, then let the LLM repair it, or
             # fall back to a conservative template variant when no LLM is set.
             shutil.copyfile(kernel_path, history / f"{spec.name}_attempt{attempt}.py")
             if self._llm_client() is not None:
                 pending_repair = compile_result.error or compile_result.category
+                reporter.emit(
+                    "repair",
+                    "scheduled",
+                    reason="compile",
+                    category=compile_result.category,
+                )
             elif strategy == "draft":
                 self._write_fix_request(
                     task_dir, spec, current_plan, "compile", compile_result.error, None
                 )
+                reporter.emit("draft", "fix_request", phase="compile")
                 break
             else:
                 current_plan = _fallback_plan(spec, current_plan, attempt + 1)
+                reporter.emit(
+                    "plan",
+                    "fallback",
+                    variant=current_plan.variant,
+                    blocks=current_plan.blocks,
+                )
+
+        # The documented --strategy llm contract is "LLM first, verified template
+        # last". The attempt loop above only falls back when the LLM call raises,
+        # so a model that keeps emitting illegal ops would otherwise end blocked
+        # even for a family that has a verified template.
+        if (
+            compile_result is None
+            and static_report is not None
+            and not static_report.ok
+            and strategy == "llm"
+            and spec.family in TEMPLATE_NAME
+        ):
+            reporter.emit("generate", "fallback", source="template", reason="llm_static_exhausted")
+            kernel_path, generator_name = generate(
+                spec,
+                current_plan,
+                task_dir,
+                self.cfg,
+                design=design,
+                knowledge=knowledge_context,
+                strategy="template",
+            )
+            static_report = run_static(spec, current_plan, kernel_path, self.cfg)
+            (task_dir / "static_report.json").write_text(
+                json.dumps(static_report.to_dict(), indent=2), encoding="utf-8"
+            )
+            static_rules = sorted({f.rule for f in static_report.findings})
+            evidence.record(
+                "static",
+                "static_gate",
+                "passed" if static_report.ok else "failed",
+                facts={"attempt": "template_fallback", "rules": static_rules},
+                artifacts=[str(task_dir / "static_report.json")],
+            )
+            if static_report.ok:
+                state.enter("compile")
+                reporter.emit("compile", "start", timeout_s=self.cfg.compile.timeout_s)
+                compile_result = compile_kernel(kernel_path, task_dir, self.cfg)
+                reporter.emit(
+                    "compile",
+                    "passed" if compile_result.ok else "failed",
+                    category=compile_result.category,
+                    elapsed_s=round(compile_result.elapsed_s, 2),
+                )
+                attempts.append(
+                    {
+                        "attempt": "template_fallback",
+                        "stage": "compile",
+                        "ok": compile_result.ok,
+                        "error": compile_result.error[-1200:],
+                        "category": compile_result.category,
+                        "generator": generator_name,
+                    }
+                )
+                if compile_result.ok:
+                    state.complete("compile")
 
         artifacts["kernel"] = str(kernel_path)
         if can_test:
@@ -515,6 +654,11 @@ class OperatorAgent:
                 },
                 artifacts=[artifacts["lowering_audit"]],
             )
+            reporter.emit(
+                "audit",
+                lowering_audit["status"],
+                checks=len(lowering_audit["checks"]),
+            )
         if compile_ok and current_plan is not plan and mode == "template":
             # Documents must reflect the plan that actually compiled.
             design = build_design(spec, current_plan, knowledge_hits)
@@ -523,6 +667,7 @@ class OperatorAgent:
 
         sim_result: SimResult | None = None
         if compile_ok and simulate and not can_test:
+            reporter.emit("simulate", "skipped", reason="no_golden", golden_source=golden_source)
             self._write_debug(
                 task_dir / "debug_log.md",
                 f"## Simulation skipped — {time.strftime('%Y-%m-%dT%H:%M:%S')}\n"
@@ -532,6 +677,7 @@ class OperatorAgent:
             )
         if compile_ok and simulate and can_test:
             state.enter("simulate")
+            reporter.emit("simulate", "start", backend=self.cfg.simulation.backend)
             sim_result = run_simulation(
                 task_dir,
                 test_path,
@@ -556,6 +702,12 @@ class OperatorAgent:
                 },
                 artifacts=[str(task_dir / "simulation_report.json")],
             )
+            reporter.emit(
+                "simulate",
+                sim_result.status,
+                backend=sim_result.backend,
+                cases=len(sim_result.result.get("cases") or []),
+            )
             if sim_result.status == "failed":
                 self._write_debug(
                     task_dir / "debug_log.md",
@@ -564,6 +716,12 @@ class OperatorAgent:
                     f"- metrics: {json.dumps(sim_result.result, ensure_ascii=False)[:1200]}",
                 )
                 current_plan = _fallback_plan(spec, current_plan, 2)
+                reporter.emit(
+                    "simulate",
+                    "retry",
+                    variant=current_plan.variant,
+                    blocks=current_plan.blocks,
+                )
                 try:
                     kernel_path, generator_name = generate(
                         spec,
@@ -593,9 +751,17 @@ class OperatorAgent:
                     repeats=self.cfg.simulation.repeats,
                     tilelang_repo=self.cfg.paths.tilelang_repo,
                     golden_override=golden_override,
+                    enumerate_variants=(mode == "template"),
                 )
                 static_report = run_static(spec, current_plan, kernel_path, self.cfg)
+                reporter.emit("compile", "start", phase="simulate_retry")
                 compile_result = compile_kernel(kernel_path, task_dir, self.cfg)
+                reporter.emit(
+                    "compile",
+                    "passed" if compile_result.ok else "failed",
+                    phase="simulate_retry",
+                    category=compile_result.category,
+                )
                 if compile_result.ok:
                     sim_result = run_simulation(
                         task_dir,
@@ -618,6 +784,12 @@ class OperatorAgent:
                             "cases": len(sim_result.result.get("cases") or []),
                         },
                         artifacts=[str(task_dir / "simulation_report.json")],
+                    )
+                    reporter.emit(
+                        "simulate",
+                        f"retry_{sim_result.status}",
+                        backend=sim_result.backend,
+                        cases=len(sim_result.result.get("cases") or []),
                     )
             if sim_result.status == "passed":
                 state.complete("simulate")
@@ -647,6 +819,7 @@ class OperatorAgent:
                 encoding="utf-8",
             )
             state.enter("board")
+            reporter.emit("board", "start", host=self.cfg.board.host or "unset")
             board_result = run_board(
                 task_dir, spec, self.cfg, force=force_board
             )
@@ -665,6 +838,12 @@ class OperatorAgent:
                 },
                 artifacts=[str(task_dir / "board_report.json")],
             )
+            reporter.emit(
+                "board",
+                board_result.status,
+                host=board_result.host or "unset",
+                error=board_result.error,
+            )
             if board_result.status == "passed":
                 state.complete("board")
             else:
@@ -677,6 +856,7 @@ class OperatorAgent:
                 "skipped",
                 facts={"reason": "simulation not passed; board requires a passing or unavailable L3"},
             )
+            reporter.emit("board", "skipped", reason="simulation_not_passed")
             self._write_debug(
                 task_dir / "debug_log.md",
                 f"## Board skipped — {time.strftime('%Y-%m-%dT%H:%M:%S')}\n"
@@ -772,6 +952,14 @@ class OperatorAgent:
             ),
             encoding="utf-8",
         )
+        reporter.emit(
+            "done",
+            "finished",
+            status=status,
+            verified=verified,
+            report=str(task_dir / "report.md"),
+            elapsed_s=round(time.time() - started, 2),
+        )
         return result
 
     def _run_unsupported(
@@ -784,9 +972,12 @@ class OperatorAgent:
         state: TaskState,
         knowledge_hits: list[dict[str, Any]],
         started: float,
+        reporter: ProgressReporter | None = None,
     ) -> dict[str, Any]:
         """Honest terminal state: record the gap, generate nothing, fake nothing."""
         reasons = list(exc.reasons)
+        reporter = reporter or ProgressReporter(task_dir, task_id)
+        reporter.emit("design", "blocked", reasons="; ".join(reasons)[:300])
         design = build_blocked_design(spec, reasons, knowledge_hits)
         (task_dir / "DESIGN.md").write_text(design, encoding="utf-8")
         state.stages["design"] = "blocked_unsupported"
@@ -802,6 +993,7 @@ class OperatorAgent:
         artifacts = {
             "design": str(task_dir / "DESIGN.md"),
             "spec": str(task_dir / "spec.yaml"),
+            "run_log": str(reporter.path),
         }
         result: dict[str, Any] = {
             "task_id": task_id,
@@ -850,6 +1042,13 @@ class OperatorAgent:
             )
             result["contract"] = contract.to_dict()
             result["skills"] = skill_bundle.to_dict()
+            reporter.emit(
+                "contract",
+                "frozen",
+                hash=contract.contract_hash,
+                skills=len(skill_bundle.skills),
+                obligations=len(skill_bundle.obligations),
+            )
             evidence.record(
                 "design",
                 "blocked_unsupported",
@@ -890,6 +1089,13 @@ class OperatorAgent:
                 indent=2,
             ),
             encoding="utf-8",
+        )
+        reporter.emit(
+            "done",
+            "blocked",
+            status="blocked_unsupported",
+            report=str(task_dir / "report.md"),
+            elapsed_s=result["elapsed_s"],
         )
         return result
 

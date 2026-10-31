@@ -18,6 +18,8 @@ skill 负责**流程与约束**，本知识库负责**事实、速查与骨架**
 | 9 | [09-verified-samples.md](09-verified-samples.md) | 找已验证样例 | 可复用 kernel 路径 |
 | 10 | [10-manifest-spec.md](10-manifest-spec.md) | 需求来自 TileOPs manifest | 契约绑定结果 + 可生成性判定 |
 | 11 | [11-trae-draft-mode.md](11-trae-draft-mode.md) | 没有 API key、用 IDE Agent 起草 | `prompt` → `draft.py` → 门禁 → `FIX_REQUEST.md` |
+| 12 | [12-op-compatibility.md](12-op-compatibility.md) | 写 API 前核对 A3/A5 拼写，或查「A5架构暂无」 | A3→A5 对照 + 待适配清单 + 新增标准 OP |
+| 13 | [13-ascend-op-reference.md](13-ascend-op-reference.md) | 查 Ascend 专属 OP 的签名/参数/约束/示例 | 158 个目录内 OP 的完整元信息（自动生成） |
 
 ## 检索协议
 
@@ -36,7 +38,8 @@ skill 负责**流程与约束**，本知识库负责**事实、速查与骨架**
 ```text
 skill（.agent/skills/）        知识库（knowledge/）
 ├─ aiop-op-pipeline     →      全流程门禁与命令（生成/仿真/上板）
-├─ tilelang-ascend      →      02 + 05 的精简版，例外与边界更全
+├─ tilelang-ascend      →      02 + 05 的精简版，例外与边界更全；A3→A5 完整映射见
+│                              references/op-compatibility.md
 ├─ tilelang-semantic    →      05 的语义规则来源
 ├─ tilelang-layout      →      02 中布局相关条目的来源
 ├─ tilelang-build       →      03 中构建命令的来源

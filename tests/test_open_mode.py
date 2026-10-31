@@ -81,7 +81,7 @@ def fake_llm(monkeypatch):
         calls["golden"] += 1
         return GOOD_GOLDEN
 
-    def repair_kernel(self, source, error, design):
+    def repair_kernel(self, source, error, design, knowledge=""):
         calls["repair"] += 1
         return GOOD_KERNEL
 
@@ -143,7 +143,7 @@ def test_compile_failure_is_repaired_by_the_llm(tmp_path, monkeypatch):
     )
     repaired = {"n": 0}
 
-    def repair_kernel(self, source, error, design):
+    def repair_kernel(self, source, error, design, knowledge=""):
         repaired["n"] += 1
         return GOOD_KERNEL
 

@@ -85,6 +85,10 @@ aiop 不是「让模型直接写代码」的代码生成器，而是**带门禁�
 | **证据链与诊断** | 追加式 `evidence.jsonl` + 失败聚类/回路路由 `diagnosis.json` | 工作区（未提交） |
 | **多场景仿真 + 负例门禁** | normal/zeros/ones/large/tiny（按算子域裁剪）；坏 kernel 必须被 `SEM004` 拒绝 | 工作区（未提交） |
 | **Campaign CLI** | `aiop campaign` 串起契约→技能→搜索→实现→仿真→上板并输出 `campaign_report.md` | 工作区（未提交） |
+| **统一进度日志** | 每个任务写 `run.log`；CLI/服务任务逐行打印阶段进度（`--no-progress` 可关） | 工作区（未提交） |
+| **HTTP 命令提交与作业日志** | `/v1/commands` 提交白名单 CLI 命令，`/v1/jobs` 查状态/日志；`/v1/tasks` 支持 manifest `op` | 工作区（未提交） |
+| **可搬运测试单文件** | `aiop export` 生成内嵌 kernel、从环境变量发现路径的 `test_<op>.py`，单文件拷到服务器即可运行 | 工作区（未提交） |
+| **结构化用例矩阵** | manifest workload×dtype 全枚举；每个 `(shape, datatype)` 组合独立 kernel 变体；逐用例输出精度/性能指标与覆盖率 | 工作区（未提交） |
 | 知识库 10/11 | manifest 契约规则、Trae draft 全流程 | `242a6ad` / 工作区 |
 
 ### 2.1 端到端能力对照
@@ -99,7 +103,7 @@ aiop 不是「让模型直接写代码」的代码生成器，而是**带门禁�
 | 错误自修正 | 静态/编译分类 + 保守 plan 回退 + LLM repair / `FIX_REQUEST.md` |
 | 仿真验证 | `npusim`/`local_npu`/`static` 三后端，精度混合容差 |
 | 跨服务器上板 | SSH 预检/部署/运行/指标/Profile，生成 `board_report.json` |
-| 可运行服务 | `python -m aiop serve` + HTTP API + CLI + pytest（82 个测试） |
+| 可运行服务 | `python -m aiop serve` + HTTP API + CLI + pytest（124 个测试） |
 
 ## 3. 环境依赖
 
@@ -251,6 +255,9 @@ python -m aiop eval --cases aiop/eval/cases.yaml
 python -m aiop campaign --spec examples/softmax.yaml --search-budget 3 --board
 python -m aiop campaign --op GemmFwdOp --workload 1 --dtype-case 0 --out reports/campaign_gemm.md
 
+# 4c. 导出单文件测试（内嵌 kernel，可直接拷到服务器）
+python -m aiop export workspace/<task> --out /tmp/bundle
+
 # 5. HTTP 服务
 python -m aiop serve --host 0.0.0.0 --port 8790
 ```
@@ -361,6 +368,7 @@ workspace/<task>/
 ├── board_report.json            # L4（可选）
 ├── result.json / report.md      # 汇总结果与人类可读报告
 ├── manifest.json / state.json   # 任务清单与阶段状态
+├── run.log                      # 统一进度日志（逐行、带时间戳/阶段）
 ├── contract.json                # TaskContract（语义/ABI/精度/性能目标/资源上限/义务）
 ├── skill.lock / context_manifest.json   # 技能选择、内容锁定、知识召回
 ├── frontier.json                # 计划搜索候选与门禁结果（--search）
@@ -409,15 +417,110 @@ open 模式（LLM/draft 起草的无模板 family）恒为 `False`；draft 用�
 
 判定：`matched_ratio ≥ matched_ratio 阈值` 且 `max_abs_error ≤ max_abs_error`。
 
+### 6.9 进度查看与统一日志
+
+每个任务都会写 `workspace/<task>/run.log`，CLI 与 HTTP 服务任务默认把同样的行**实时打印到终端（stderr）**：
+
+```text
+[10:16:57] [+  0.0s] [relu-demo] [task] start op=relu family=elementwise_unary strategy=auto ...
+[10:16:57] [+  0.0s] [relu-demo] [design] done mode=template variant=simt_ub_staged blocks=32 ...
+[10:16:57] [+  0.0s] [relu-demo] [contract] frozen hash=7973e22e236f29cf skills=4 obligations=18
+[10:17:04] [+  7.0s] [relu-demo] [search] candidate=e-t2000-b64 status=passed static=True compile=True
+[10:17:04] [+  7.0s] [relu-demo] [generate] start attempt=1 max_attempts=3 plan=simt_ub_staged
+[10:17:04] [+  7.0s] [relu-demo] [static] passed rules=none
+[10:17:04] [+  7.0s] [relu-demo] [compile] start timeout_s=600
+[10:17:06] [+  8.9s] [relu-demo] [compile] passed category=none elapsed_s=1.88
+[10:17:06] [+  8.9s] [relu-demo] [audit] passed checks=5
+[10:17:07] [+ 10.1s] [relu-demo] [simulate] unavailable backend=static cases=0
+[10:17:07] [+ 10.1s] [relu-demo] [done] finished status=success_static_only verified=False
+```
+
+- `--no-progress` 关闭终端输出（`run.log` 仍会写）；`--json` 的 stdout 不受影响。
+- 另开终端跟踪：`tail -f workspace/<task>/run.log`；详细诊断仍在 `debug_log.md`。
+- HTTP 服务：任务进度打印在**服务端终端**，也可通过 `GET /v1/tasks/{id}/log` 取完整日志；
+  终端命令可通过 `POST /v1/commands` 提交，作业日志用 `GET /v1/jobs/{job_id}/log`。
+- `state.json` 仍只在任务开始/结束落盘，阶段级进度以 `run.log` 为准。
+
+### 6.10 导出可搬运的测试文件
+
+```bash
+python -m aiop export workspace/<task> --out /tmp/bundle
+```
+
+产物是**单个** `test_<op>.py`：
+
+- kernel 源码**逐行铺在文件顶层**（不是字符串、不是 base64），可直接阅读/断点调试；
+  测试侧符号统一加 `_aiop` / `_AIOP` 后缀（`golden_aiop_N`、`compare_aiop`、`main_aiop`、
+  `CASE_SPECS_AIOP` 等），避免与 kernel 中定义的 `build`/辅助函数重名。
+  脚本中**没有**任何指向外部 kernel 文件的 import / `spec_from_file_location` / `KERNEL_PATH`。
+- **manifest 全组合枚举**：模板类任务会遍历 TileOPs manifest 的全部 workload 行 × dtype case，
+  每个合法的 `(shape, datatype)` 组合渲染一个独立 kernel 变体（`build_0`、`build_1`…），
+  因为 TileLang kernel 是按固定 shape/dtype 编译的，不能复用一个 kernel 跑其他组合。
+  LLM/draft 等无法确定性再生成的算子只保留其绑定的单组合。
+- **结构化用例**：`CASE_SPECS_AIOP` 是扁平列表，每一项显式包含
+  `shape`、`datatype`、`inputs`、`output`、`precision`、`bytes`、`flops`、`kernel`、`golden`
+  以及数据变体 `normal/zeros/ones/large/tiny`；不读取任何外部测试数据或基准文件。
+- **逐用例指标**：每个 case 输出两组可直接解析的指标：
+  - `precision`：`max_abs_error`、`mean_abs_error`、`max_rel_error`、`mean_rel_error`、
+    `matched_ratio`、`mismatched_elements`、`total_elements`
+  - `performance`：`latency_ms`、`compute_ms`（NPU Event 设备耗时）、`bandwidth_gbps`、
+    `throughput_gflops`、`throughput_melems_s`、`bytes`、`flops`
+- **覆盖率**：`coverage` 给出 `declared/executable/executed/ratio/complete/missing/unsupported`；
+  模板无法生成 manifest 行（如广播 shape、非末轴 reduce、UB 超限）仍以
+  `available: false` 保留在 `CASE_SPECS_AIOP` 并汇总到 `UNSUPPORTED_CONTRACTS_AIOP`，
+  运行时标记 `status: unsupported` 而非静默丢弃；其余可执行 case 全部通过时脚本退出码仍为 0。
+- 路径自动发现，不依赖生成机器的绝对路径：
+  - tilelang：`AIOP_TILELANG_REPO` > 生成时路径（仅当目录存在才加入 `sys.path`）
+  - CANN：`AIOP_CANN_HOME` > `ASCEND_HOME_PATH` > `ASCEND_TOOLKIT_HOME` > 生成时路径 > `/usr/local/Ascend/ascend-toolkit/latest` > `/usr/local/Ascend/cann-*`
+- 只使用内嵌 kernel：修改 kernel 后需重新 `aiop generate` 或 `aiop export`，旧测试文件不会感知改动。
+
+输出 JSON 结构（`--json result.json` 同内容）：
+
+```json
+{
+  "status": "passed",
+  "coverage": {"declared": 3, "executable": 3, "executed": 3,
+               "ratio": 1.0, "complete": true, "unsupported": 0},
+  "cases": [{
+    "name": "v0_hidden_state_prefill_float16_normal",
+    "shape": [[2048, 4096]],
+    "datatype": ["float16"],
+    "kernel": "build_0",
+    "status": "passed",
+    "precision": {"max_abs_error": 0.0, "mean_abs_error": 0.0,
+                  "max_rel_error": 0.0, "mean_rel_error": 0.0,
+                  "matched_ratio": 1.0, "mismatched_elements": 0,
+                  "total_elements": 8388608},
+    "performance": {"latency_ms": 0.12, "compute_ms": 0.10,
+                    "bandwidth_gbps": 279.6, "throughput_gflops": 0.17,
+                    "throughput_melems_s": 69.9, "bytes": 33554432,
+                    "flops": 16777216, "samples": 20}
+  }],
+  "summary": {"total": 15, "passed": 15, "failed": 0,
+              "latency_ms": 0.12, "max_abs_error": 0.0, "matched_ratio": 1.0}
+}
+```
+
+服务器上执行：
+
+```bash
+scp /tmp/bundle/test_softmax_2.py user@a5-host:/tmp/
+ssh user@a5-host
+source /usr/local/Ascend/ascend-toolkit/set_env.sh   # 或设置 ASCEND_HOME_PATH
+python /tmp/test_softmax_2.py --device npu --json /tmp/result.json
+```
+
+退出码：`0` 通过，`1` 精度/运行失败，`3` 环境不可用（无 torch_npu/设备）。
+
 ## 7. 架构与目录
 
 ```text
 aiop/
 ├── aiop/                       # 可执行 Agent 服务
-│   ├── agent/                  # 编排、契约、技能、计划搜索、证据、审计、campaign
+│   ├── agent/                  # 编排、契约、技能、计划搜索、证据、审计、进度、campaign
 │   ├── generation/             # 模板渲染、LLM 适配、修复、draft 读取
 │   ├── checks/                 # 静态检查、隔离编译门禁
-│   ├── simulation/             # 测试脚本生成、npusim/local NPU
+│   ├── simulation/             # 用例矩阵、测试脚本生成、npusim/local NPU
 │   ├── board/                  # SSH 预检/部署/实测
 │   ├── knowledge/              # BM25 检索
 │   ├── eval/                   # 36 用例基准套件
@@ -431,7 +534,7 @@ aiop/
 ├── examples/                   # softmax.yaml + spec/（25 个 manifest YAML）
 ├── samples/                    # 8 个已验证算子样例 + index.json
 ├── scripts/                    # build_samples.py / sync_skills.sh
-├── tests/                      # 82 个单元 + 端到端测试
+├── tests/                      # 124 个单元 + 端到端测试
 ├── config/aiop.yaml
 ├── reports/                    # 基准报告
 └── workspace/                  # 运行时任务产物（git 忽略）
@@ -446,6 +549,7 @@ aiop/
 - [aiop/agent/search.py](aiop/agent/search.py)：族感知候选计划、模型评分、`frontier.json`。
 - [aiop/agent/audit.py](aiop/agent/audit.py)：LoweringAudit（计划 vs 实际）。
 - [aiop/agent/evidence.py](aiop/agent/evidence.py)：EvidenceStore + Diagnoser。
+- [aiop/agent/progress.py](aiop/agent/progress.py)：统一 `run.log` + 终端逐行进度。
 - [aiop/agent/campaign.py](aiop/agent/campaign.py)：六步报告与负例门禁。
 - [aiop/generation/templates.py](aiop/generation/templates.py)：7 家族模板。
 - [aiop/checks/static.py](aiop/checks/static.py)：稳定规则号（`SYN/API/HW/SEM`）。
@@ -576,9 +680,10 @@ Campaign 实测（本机）：`softmax_2`（[examples/softmax.yaml](examples/sof
 
 | 命令 | 作用 | 主要参数 |
 |---|---|---|
-| `generate` | 跑完整流水线 | `--spec/--requirement/--manifest+--op`、`--workload`、`--dtype-case`、`--strategy`、`--draft`、`--search`、`--search-budget`、`--task-id`、`--simulate/--no-simulate`、`--board`、`--force-board`、`--reuse`、`--json` |
-| `campaign` | 六步全链路 + 汇总报告 | 与 `generate` 相同的输入选择器、`--search/--no-search`、`--search-budget`、`--simulate/--no-simulate`、`--board`、`--out` |
+| `generate` | 跑完整流水线 | `--spec/--requirement/--manifest+--op`、`--workload`、`--dtype-case`、`--strategy`、`--draft`、`--search`、`--search-budget`、`--no-progress`、`--task-id`、`--simulate/--no-simulate`、`--board`、`--force-board`、`--reuse`、`--json` |
+| `campaign` | 六步全链路 + 汇总报告 | 与 `generate` 相同的输入选择器、`--search/--no-search`、`--search-budget`、`--no-progress`、`--simulate/--no-simulate`、`--board`、`--out` |
 | `prompt` | 写 `PROMPT.md` 供 IDE Agent 起草 | 与 `generate` 相同的输入选择器 |
+| `export` | 导出单文件可搬运测试 | `task`、`--out`（默认 `<task>/export`） |
 | `check` | 只跑 L0 静态 | `task` |
 | `compile` | 只跑 L1/L2 | `task` |
 | `simulate` | 只跑 L3 | `task` |
@@ -594,32 +699,94 @@ Campaign 实测（本机）：`softmax_2`（[examples/softmax.yaml](examples/sof
 ### 11.2 HTTP API
 
 ```text
+GET  /                          # 服务索引 + 可用命令清单
 GET  /healthz
 GET  /v1/env
 POST /v1/search                 {"query": "...", "k": 5}
-POST /v1/tasks                  {"spec"|"spec_yaml"|"requirement", "simulate"?, "board"?, "strategy"?, "task_id"?}
+POST /v1/tasks                  {"spec"|"spec_yaml"|"requirement"|"op",
+                                 "workload"?, "dtype_case"?, "simulate"?, "board"?,
+                                 "strategy"?, "search"?, "search_budget"?, "draft"?, "task_id"?}
 GET  /v1/tasks
 GET  /v1/tasks/{id}
 GET  /v1/tasks/{id}/report
+GET  /v1/tasks/{id}/log
 POST /v1/tasks/{id}/board       {"host"?, "force"?}
+POST /v1/commands               {"command": "...", "args"?: [...], "config"?: "..."}
+GET  /v1/jobs
+GET  /v1/jobs/{job_id}
+GET  /v1/jobs/{job_id}/log      ?tail=N
 ```
 
-- `POST /v1/tasks` 立即返回 `202 {"task_id": ..., "status": "queued"}`，任务在线程池中执行；
-  建议显式传 `task_id` 以便轮询（不传时返回 `"auto"`，真实 id 由 spec 哈希生成）。
-- `GET /v1/tasks/{id}` 在任务未完成时返回 `202` + `state.json`。
-- `strategy` 支持 `auto/template/llm/draft`；`draft` 通过 HTTP 时固定读取
-  `<workspace>/<task_id>/draft.py`（HTTP 不传文件路径），需先在本地 `prompt` 并写好草稿。
-- 设置 `AIOP_SERVICE_TOKEN` 后所有请求需 `Authorization: Bearer <token>`。
+### 11.2.1 提交任务（`/v1/tasks`）
 
-示例：
+- 输入四选一：`spec`（TaskSpec JSON）、`spec_yaml`（YAML 字符串）、`requirement`（自然语言）、
+  `op` + `workload` + `dtype_case`（TileOPs manifest，可选 `manifest` 路径）。
+- 其余字段：`simulate`、`board`、`strategy`、`search`、`search_budget`、`draft`、`task_id`。
+- 返回 `202 {"task_id": "...", "status": "queued"}`；不传 `task_id` 时**直接返回真实哈希 id**，可直接轮询。
+- 运行中 `GET /v1/tasks/{id}` 返回 `202` + `state.json`；结束后返回 `200` + `result.json`。
+- `GET /v1/tasks/{id}/report` 取 `report.md`，`GET /v1/tasks/{id}/log` 取统一 `run.log`。
 
 ```bash
 curl -s localhost:8790/v1/tasks -H 'Content-Type: application/json' \
-  -d '{"requirement":"rmsnorm on [128, 4096] float32","simulate":true}'
+  -d '{"requirement":"relu on [128, 1000] float32","task_id":"relu-demo","simulate":false}'
 
 curl -s localhost:8790/v1/tasks -H 'Content-Type: application/json' \
-  -d '{"spec_yaml":"name: relu\nfamily: elementwise_unary\ninputs:\n- {name: X, shape: [128, 1000], dtype: float32}\noutputs:\n- {name: Y, shape: [128, 1000], dtype: float32}","task_id":"relu-demo","strategy":"template"}'
+  -d '{"op":"GQADenseFwdOp","workload":0,"dtype_case":0,"task_id":"gqa-demo","simulate":false}'
 ```
+
+### 11.2.2 提交终端命令（`/v1/commands`）
+
+把 CLI 命令作为子进程提交，参数原样透传；stdout/stderr 合并写入**作业日志**，并实时打印到服务端终端。
+
+允许的命令：`generate`、`campaign`、`prompt`、`export`、`check`、`compile`、`simulate`、`board`、
+`search`、`env`、`manifest`、`eval`（`serve` 被禁用，避免递归启动）。
+
+```bash
+# 提交 generate（等价于终端里的 python -m aiop generate ...）
+curl -s localhost:8790/v1/commands -H 'Content-Type: application/json' -d '{
+  "command": "generate",
+  "args": ["--spec", "examples/softmax.yaml", "--search", "--search-budget", "3"]
+}'
+
+# args 也可以是一个字符串（按 shell 规则拆分）
+curl -s localhost:8790/v1/commands -H 'Content-Type: application/json' -d '{
+  "command": "manifest",
+  "args": "list --json"
+}'
+
+# 可选：为这个 job 指定 config
+curl -s localhost:8790/v1/commands -H 'Content-Type: application/json' -d '{
+  "command": "eval",
+  "args": ["--cases", "aiop/eval/cases.yaml", "--no-simulate"],
+  "config": "config/aiop.yaml"
+}'
+```
+
+返回：
+
+```json
+{"job_id": "job-1a2b3c4d", "command": "generate", "status": "queued",
+ "exit_code": null, "task_id": null, "log": "workspace/_jobs/job-1a2b3c4d.log"}
+```
+
+查询与日志：
+
+```bash
+curl -s localhost:8790/v1/jobs                     # 作业列表（含重启前落盘的元数据）
+curl -s localhost:8790/v1/jobs/job-1a2b3c4d        # status/exit_code/task_id
+curl -s "localhost:8790/v1/jobs/job-1a2b3c4d/log?tail=100"   # 最后 100 行
+```
+
+- `status`：`queued → running → passed|failed`；`exit_code` 即 CLI 退出码。
+- `task_id`：`generate`/`campaign` 从 `task:` 行解析；`check/compile/simulate/board` 从第一个参数解析。
+- 作业元数据落盘到 `workspace/_jobs/<job_id>.json`，日志落盘到 `<job_id>.log`，服务重启后仍可查询。
+- 不提供取消/杀进程接口；长任务会占用 2 个 worker 之一。
+
+### 11.2.3 鉴权与安全
+
+- 设置 `AIOP_SERVICE_TOKEN` 后所有请求需 `Authorization: Bearer <token>`。
+- `POST /v1/commands` 只允许白名单命令，且不经过 shell（参数按列表传给子进程）。
+- 默认建议绑定 `127.0.0.1`；开放到网络时务必设置 token，并限制可写的 `config`/`args` 路径。
 
 ### 11.3 Python API
 
@@ -641,7 +808,8 @@ result["artifacts"]     # kernel / design / compile_report ...
 ```
 
 `OperatorAgent.run(spec, *, task_id=None, simulate=True, board=False, force_board=False,
-strategy="auto", reuse_workspace=False, draft=None, search=False, search_budget=4)`。
+strategy="auto", reuse_workspace=False, draft=None, search=False, search_budget=4,
+progress=False)`。`progress=True` 时写 `run.log` 并把阶段行打印到 stderr。
 
 契约 / 技能 / 搜索 / 证据 / 审计 / campaign 可直接复用：
 
@@ -680,7 +848,11 @@ write_campaign_report(task_dir, result, negative=negative)
 | 新增 `--search/--search-budget` | `aiop/cli.py`、`aiop/agent/search.py` | 有界候选计划与 `frontier.json` |
 | 新增契约/技能层 | `aiop/agent/contract.py`、`aiop/agent/skills.py` | `contract.json`、`skill.lock`、`context_manifest.json` |
 | 新增证据/审计层 | `aiop/agent/evidence.py`、`aiop/agent/audit.py` | `evidence.jsonl`、`diagnosis.json`、`lowering_audit.json` |
-| 仿真多场景化 | `aiop/simulation/testgen.py` | normal/zeros/ones/large/tiny；`make_inputs(device, case=None)` 保持兼容 |
+| 仿真多场景化 | `aiop/simulation/testgen.py` | 结构化 `shape`/`datatype` 用例；`make_inputs_aiop(case, device)`；逐用例精度/性能指标 |
+| 用例矩阵与 kernel 变体 | `aiop/simulation/casematrix.py` | manifest workload×dtype 枚举；每组合独立 `build_N`；覆盖率与 unsupported 报告 |
+| 统一进度日志 | `aiop/agent/progress.py`、`orchestrator.py`、`service/server.py` | `run.log`、终端 stderr 逐行、`GET /v1/tasks/{id}/log` |
+| HTTP 命令提交 | `aiop/service/server.py` | `POST /v1/commands`、`GET /v1/jobs`、`/v1/jobs/{id}/log` |
+| 可搬运测试导出 | `aiop/simulation/testgen.py`、`aiop/cli.py` | `aiop export` → 内嵌 kernel 的单文件 `test_<op>.py` |
 
 ## 12. 知识库与多代理
 
@@ -717,7 +889,7 @@ Skill：[.agent/skills/aiop-op-pipeline/SKILL.md](.agent/skills/aiop-op-pipeline
 ## 13. 测试与基准
 
 ```bash
-python -m pytest -q              # 82 个测试（静态/规划/manifest/open/draft/契约/搜索/审计/端到端）
+python -m pytest -q              # 124 个测试（静态/规划/manifest/open/draft/契约/搜索/审计/进度/HTTP/导出/端到端）
 python -m pytest -q -m slow      # 仅端到端（会调用 bisheng）
 
 python -m aiop eval --cases aiop/eval/cases.yaml --no-simulate \
@@ -758,6 +930,8 @@ python -m aiop campaign --op GemmFwdOp --workload 1 --dtype-case 0 --out reports
 | `frontier.json` 一直选 base/高分候选 | 无 L3/L4 时只能按模型评分排序 | 在可用设备上跑 `aiop simulate`/`board` 后用实测数据复核 |
 | `campaign` 报 `negative: failed` | 静态门禁没有拒绝注入的 `T.device_assert` | 检查 `SEM004` 规则是否被改动，属于门禁回归 |
 | `contract.json` 里 `perf.enforced=false` | spec 未设置 `perf.target` | 在 TaskSpec 中显式给出 `perf: {metric: latency, target: ..., unit: ms}` |
+| 终端看不到逐行进度 | 用了 `--no-progress`，或 stderr 被重定向 | 去掉开关；`tail -f workspace/<task>/run.log` 可补看 |
+| HTTP 任务看不到进度 | 进度打印在服务端终端，不在响应里 | 服务端 `tail -f` 或 `GET /v1/tasks/{id}/log` |
 
 ## 15. 已知限制
 
@@ -786,7 +960,7 @@ python -m aiop campaign --op GemmFwdOp --workload 1 --dtype-case 0 --out reports
 | `v0.1.0`（基线） | `3f7d3ca` Initial commit | 7 家族模板、规划器、L0–L4 流水线、HTTP 服务、28 用例基准、知识库 01–09 |
 | `v0.1.0+manifest/llm` | `242a6ad` `feat:llm` | TileOPs manifest 绑定（205 条目/23 映射）、LLM open 模式与 repair、GEMM 非 fp32 输出 cast、8 个 manifest 基准用例（36 总数）、知识库 10、`examples/spec/` 25 个 manifest YAML（含 `types.yaml`） |
 | `v0.1.0+draft`（工作区，未提交） | — | `prompt` 命令、`--strategy draft`/`--draft`、`FIX_REQUEST.md`、`golden_draft.py`、知识库 11 |
-| `v0.1.0+campaign`（工作区，未提交） | — | TaskContract、SkillRegistry、有界计划搜索、LoweringAudit、EvidenceStore/Diagnoser、多场景仿真 + 负例门禁、`campaign` 命令；测试 71 → 82 |
+| `v0.1.0+campaign`（工作区，未提交） | — | TaskContract、SkillRegistry、有界计划搜索、LoweringAudit、EvidenceStore/Diagnoser、多场景仿真 + 负例门禁、`campaign` 命令、统一 `run.log` 与终端进度、HTTP `/v1/commands` + `/v1/jobs`、`export` 单文件测试；测试 71 → 90 |
 
 > `pyproject.toml` 当前版本号仍为 `0.1.0`；上表用提交批次标记功能适用版本，便于对应代码状态。
 
@@ -808,7 +982,7 @@ TaskContract → SkillBundle → 候选计划 → 静态/编译门禁 → Loweri
 | Implementer | [generation/](aiop/generation/) | `<op>.py` / `history/` | 模板 / LLM / 外部 draft |
 | AutoTuneAdapter | `SearchController` 候选 | `frontier.json` | tile/grid/threads/stages/GEMM block；未接 `T.Stage`/latency 标注 |
 | CompilerBridge | [checks/compiler.py](aiop/checks/compiler.py) + `compile_worker` | `compile_result.json` / `.cce.c` | 隔离 lowering + bisheng |
-| IndependentEvaluator | [simulation/testgen.py](aiop/simulation/testgen.py) | `simulation_report.json` | normal/zeros/ones/large/tiny；负例门禁 `SEM004` |
+| IndependentEvaluator | [simulation/testgen.py](aiop/simulation/testgen.py) + [simulation/casematrix.py](aiop/simulation/casematrix.py) | `simulation_report.json` | shape/datatype 全组合；逐用例精度/性能；负例门禁 `SEM004` |
 | EvidenceStore 与 Diagnoser | [agent/evidence.py](aiop/agent/evidence.py) | `evidence.jsonl` / `diagnosis.json` | 追加事实 + 失败聚类 + 回路路由 |
 | LoweringAudit | [agent/audit.py](aiop/agent/audit.py) | `lowering_audit.json` | 计划声明 vs lowering 可观测事实 |
 | SkillEvolutionService | — | — | 未落地：技能仍为静态 markdown |

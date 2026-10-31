@@ -92,7 +92,7 @@ def test_test_script_is_self_contained(tmp_path):
     )
     source = test.read_text(encoding="utf-8")
     ast.parse(source)
-    for marker in ("[PRECISION_PASS]", "[PRECISION_FAIL]", "--json", "golden("):
+    for marker in ("[PRECISION_PASS]", "[PRECISION_FAIL]", "--json", "golden_aiop_0("):
         assert marker in source
 
 
@@ -115,7 +115,7 @@ def test_generated_golden_executes_on_cpu(spec, tmp_path):
     module_spec = importlib.util.spec_from_file_location(f"runner_{spec.name}_{spec.family}", test)
     module = importlib.util.module_from_spec(module_spec)
     module_spec.loader.exec_module(module)
-    inputs = module.make_inputs("cpu")
-    output = module.golden(*inputs)
+    inputs = module.make_inputs_aiop(module.CASE_SPECS_AIOP[0], "cpu")
+    output = module.golden_aiop_0(*inputs)
     assert tuple(output.shape) == tuple(spec.output.shape)
     assert output.numel() == spec.output.numel

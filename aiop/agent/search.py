@@ -18,7 +18,7 @@ import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..checks.compiler import compile_kernel
 from ..checks.static import run_static
@@ -239,6 +239,15 @@ def propose_candidates(spec: TaskSpec, base: Plan) -> list[Candidate]:
     return sorted(deduped.values(), key=lambda c: (-c.score, c.label))
 
 
+def _notify(callback: Callable[[str], None] | None, message: str) -> None:
+    if callback is None:
+        return
+    try:
+        callback(message)
+    except Exception:  # noqa: BLE001 - progress must not break a search
+        pass
+
+
 class SearchController:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
@@ -252,11 +261,13 @@ class SearchController:
         design: str = "",
         knowledge: str = "",
         budget: int = 4,
+        on_event: Callable[[str], None] | None = None,
     ) -> tuple[Plan, Path]:
         task_dir = Path(task_dir)
         candidates = propose_candidates(spec, base)
         budget = max(1, int(budget))
         tried = candidates[:budget]
+        _notify(on_event, f"proposed={len(candidates)} budget={budget}")
         records: list[dict[str, Any]] = []
         incumbent: Candidate | None = None
         for cand in tried:
@@ -267,6 +278,7 @@ class SearchController:
             compile_ok = False
             category = "none"
             error = ""
+            _notify(on_event, f"candidate={cand.label} score={cand.score}")
             try:
                 kernel, generator = generate(
                     spec,
@@ -298,6 +310,11 @@ class SearchController:
                 category = "generator"
                 error = f"{type(exc).__name__}: {exc}"
             status = "passed" if (static_ok and compile_ok) else "failed"
+            _notify(
+                on_event,
+                f"candidate={cand.label} status={status} static={static_ok} "
+                f"compile={compile_ok} category={category}",
+            )
             records.append(
                 {
                     "label": cand.label,
