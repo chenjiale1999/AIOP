@@ -7,6 +7,8 @@ import json
 import sys
 from pathlib import Path
 
+from .agent.campaign import run_negative_probe, write_campaign_report
+from .agent.design import build_design, build_draft_prompt, build_open_design
 from .agent.orchestrator import OperatorAgent, task_id_for
 from .board.runner import run_board
 from .checks.compiler import compile_kernel
@@ -14,9 +16,9 @@ from .checks.static import run_static
 from .config import load_config
 from .knowledge.index import default_index
 from .manifest import bind_operator, describe_operator, list_operators
-from .runtime.hardware import Plan, build_plan
+from .runtime.hardware import Plan, build_open_plan, build_plan
 from .simulation.runner import run_simulation
-from .specs import TaskSpec, spec_from_requirement
+from .specs import TaskSpec, UnsupportedOperator, spec_from_requirement
 
 
 def _load_spec(args) -> TaskSpec:
@@ -71,6 +73,9 @@ def cmd_generate(args) -> int:
         force_board=args.force_board,
         strategy=args.strategy,
         reuse_workspace=args.reuse,
+        draft=args.draft or None,
+        search=args.search,
+        search_budget=args.search_budget,
     )
     task_dir = cfg.workspace / result["task_id"]
     if args.json:
@@ -88,6 +93,45 @@ def cmd_generate(args) -> int:
         for note in result.get("notes", []):
             print(f"note:   {note}")
     return 0 if result["status"] in ("success", "success_static_only") else 1
+
+
+def cmd_campaign(args) -> int:
+    """Run the full six-step campaign and archive one consolidated report."""
+    cfg = load_config(args.config or None)
+    spec = _load_spec(args)
+    result = OperatorAgent(cfg).run(
+        spec,
+        task_id=args.task_id or None,
+        simulate=args.simulate,
+        board=args.board,
+        strategy=args.strategy,
+        search=args.search,
+        search_budget=args.search_budget,
+    )
+    task_dir = cfg.workspace / result["task_id"]
+    negative: dict = {"status": "skipped", "reason": "no plan"}
+    plan_data = result.get("plan") or {}
+    if plan_data:
+        fields = {field for field in Plan.__dataclass_fields__}
+        plan = Plan(**{k: v for k, v in plan_data.items() if k in fields})
+        negative = run_negative_probe(task_dir, spec, plan, cfg)
+    report = write_campaign_report(task_dir, result, args.out or None, negative=negative)
+    print(f"status: {result['status']}  verified: {result['verified']}")
+    print(f"task:   {task_dir}")
+    print(f"report: {report}")
+    if negative.get("status") != "skipped":
+        print(
+            f"negative: {negative['status']} "
+            f"(expected {negative.get('expected_rule')}, observed {negative.get('observed_rules')})"
+        )
+    for name in ("contract", "context_manifest", "frontier", "lowering_audit", "diagnosis"):
+        path = (result.get("artifacts") or {}).get(name)
+        if path:
+            print(f"{name}: {path}")
+    for note in result.get("notes", []):
+        print(f"note:   {note}")
+    ok = result["status"] in ("success", "success_static_only")
+    return 0 if ok and negative.get("status") != "failed" else 1
 
 
 def cmd_check(args) -> int:
@@ -143,6 +187,42 @@ def cmd_env(args) -> int:
     if args.probe_compile:
         data["compile_probe"] = compile_probe(cfg)
     print(json.dumps(data, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_prompt(args) -> int:
+    """Prepare a drafting request so an IDE agent (Trae) can play the LLM role."""
+    cfg = load_config(args.config or None)
+    spec = _load_spec(args)
+    hits = default_index().search(f"{spec.family} {spec.name} tiling 内存 精度 性能", k=5)
+    try:
+        plan = build_plan(spec)
+        design = build_design(spec, plan, hits)
+    except UnsupportedOperator as exc:
+        plan = build_open_plan(spec)
+        design = build_open_design(spec, exc.reasons, hits, golden_source="unavailable")
+    task_id = task_id_for(spec)
+    task_dir = cfg.workspace / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    spec.save(task_dir / "spec.yaml")
+    (task_dir / "DESIGN.md").write_text(design, encoding="utf-8")
+    prompt = build_draft_prompt(spec, design, hits)
+    path = task_dir / "PROMPT.md"
+    path.write_text(prompt, encoding="utf-8")
+    print(f"task:   {task_dir}")
+    print(f"prompt: {path}")
+    if getattr(args, "op", None):
+        cmd = (
+            f"python -m aiop generate --op {args.op} --workload {args.workload} "
+            f"--dtype-case {args.dtype_case} --strategy draft"
+        )
+    elif getattr(args, "spec", None):
+        cmd = f"python -m aiop generate --spec {args.spec} --strategy draft"
+    else:
+        cmd = "python -m aiop generate --requirement '<text>' --strategy draft"
+    print(f"next:   {cmd}")
+    print()
+    print("下一步：让 IDE Agent（Trae）按 PROMPT.md 写 draft.py，然后执行上面这条命令。")
     return 0
 
 
@@ -216,16 +296,52 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--strategy",
         default="auto",
-        choices=["auto", "template", "llm"],
+        choices=["auto", "template", "llm", "draft"],
         help="auto: verified template when the family has one, else LLM (open mode); "
-        "template: templates only; llm: LLM first, template as fallback",
+        "template: templates only; llm: LLM first, template as fallback; "
+        "draft: use an externally written draft.py (Trae/IDE agent), no API key needed",
     )
+    p.add_argument("--draft", default="", help="draft kernel path (default <task>/draft.py)")
+    p.add_argument("--search", action="store_true", help="bounded plan search before generation")
+    p.add_argument("--search-budget", type=int, default=4, help="number of candidate plans to gate")
     p.add_argument("--simulate", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--board", action="store_true")
     p.add_argument("--force-board", action="store_true")
     p.add_argument("--reuse", action="store_true")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_generate)
+
+    p = sub.add_parser(
+        "campaign",
+        help="run contract → skills → search → gates → simulation → board and write one report",
+    )
+    p.add_argument("--spec", help="TaskSpec YAML/JSON")
+    p.add_argument("--requirement", help="natural-language requirement")
+    p.add_argument("--manifest", help="TileOPs manifest yaml (or its spec directory)")
+    p.add_argument("--op", help="manifest entry name")
+    p.add_argument("--workload", default=0, type=_workload_selector)
+    p.add_argument("--dtype-case", type=int, default=0)
+    p.add_argument("--task-id", default="")
+    p.add_argument(
+        "--strategy",
+        default="auto",
+        choices=["auto", "template", "llm", "draft"],
+    )
+    p.add_argument("--search", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--search-budget", type=int, default=4)
+    p.add_argument("--simulate", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--board", action="store_true")
+    p.add_argument("--out", default="", help="optional campaign report path")
+    p.set_defaults(func=cmd_campaign)
+
+    p = sub.add_parser("prompt", help="write PROMPT.md so an IDE agent can draft the kernel")
+    p.add_argument("--spec", help="TaskSpec YAML/JSON")
+    p.add_argument("--requirement", help="natural-language requirement")
+    p.add_argument("--manifest", help="TileOPs manifest yaml (or its spec directory)")
+    p.add_argument("--op", help="manifest entry name")
+    p.add_argument("--workload", default=0, type=_workload_selector)
+    p.add_argument("--dtype-case", type=int, default=0)
+    p.set_defaults(func=cmd_prompt)
 
     p = sub.add_parser("check", help="static checks for an existing task")
     p.add_argument("task")

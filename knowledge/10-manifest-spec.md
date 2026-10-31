@@ -156,4 +156,4 @@ print("bound", ok, "failed", fail)
 EOF
 ```
 
-当前：2125/2208 行绑定成功；`attention.yaml` 235/235 全部绑定成功。
+当前：2125/2208 行绑定成功；`attention.yaml` 256/256 全部绑定成功。

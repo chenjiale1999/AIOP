@@ -1,6 +1,7 @@
 """Open-ended (LLM) mode: generating operators that have no A5 template."""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -170,3 +171,38 @@ def test_metadata_inputs_skip_numeric_verification(tmp_path, fake_llm):
     assert result["compile"]["ok"] is True
     assert any("L3 skipped" in note for note in result["notes"])
     assert "test" not in result["artifacts"]
+
+
+@pytest.mark.slow
+def test_draft_mode_needs_no_llm_and_compiles(tmp_path):
+    cfg = _cfg(tmp_path, llm=False)
+    spec = _spec()
+    task_dir = tmp_path / "workspace" / "fusedprobe-draft"
+    task_dir.mkdir(parents=True)
+    (task_dir / "draft.py").write_text(GOOD_KERNEL, encoding="utf-8")
+    result = OperatorAgent(cfg).run(
+        spec, simulate=False, strategy="draft", draft=str(task_dir / "draft.py")
+    )
+    assert result["mode"] == "open"
+    assert result["generator"] == "draft"
+    assert result["compile"]["ok"] is True
+    assert result["status"] == "success_static_only"
+
+
+@pytest.mark.slow
+def test_broken_draft_writes_a_fix_request(tmp_path):
+    cfg = _cfg(tmp_path, llm=False)
+    task_dir = tmp_path / "workspace" / "fusedprobe-broken"
+    task_dir.mkdir(parents=True)
+    broken = GOOD_KERNEL.replace("T.max(", "T.hardsigmoid(")
+    (task_dir / "draft.py").write_text(broken, encoding="utf-8")
+    result = OperatorAgent(cfg).run(
+        _spec(), simulate=False, strategy="draft", draft=str(task_dir / "draft.py")
+    )
+    assert result["status"] == "blocked_static"
+    task_dir = Path(result["artifacts"]["kernel"]).parent
+    fix = task_dir / "FIX_REQUEST.md"
+    assert fix.is_file()
+    text = fix.read_text(encoding="utf-8")
+    assert "T.hardsigmoid" in text
+    assert "did you mean" in text

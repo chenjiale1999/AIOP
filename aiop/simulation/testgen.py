@@ -2,6 +2,12 @@
 
 The script is used both by the local simulator (npusim) and by the remote board
 runner, so it must not depend on the aiop package being installed on the target.
+
+Every script runs a small, deterministic case matrix (normal / zeros / ones /
+large / tiny, with domain guards for log/sqrt/rsqrt/div) against one compiled
+kernel. This is the aiop counterpart of the ``IndependentEvaluator`` in
+``some_ref.md``: fixed inputs, fixed oracle, all cases must pass before a
+measurement is reported.
 """
 
 from __future__ import annotations
@@ -24,6 +30,15 @@ TORCH_DTYPE = {
     "bool": "torch.bool",
 }
 
+FLOAT_DTYPES = {
+    "float16",
+    "bfloat16",
+    "float32",
+    "float64",
+    "float8_e4m3fn",
+    "float8_e5m2",
+    "hifloat8",
+}
 
 GOLDEN_FAMILIES = {
     "elementwise_unary",
@@ -112,18 +127,50 @@ def _golden_body(spec: TaskSpec, override: str | None = None) -> tuple[str, str]
 
 def _input_creation(spec: TaskSpec) -> str:
     lines = []
-    for t in spec.inputs:
+    for index, t in enumerate(spec.inputs):
         if t.dtype in ("int8", "int16", "int32", "uint8", "uint16"):
             lines.append(
                 f"    {t.name} = torch.randint(-8, 8, {tuple(t.shape)}, dtype={TORCH_DTYPE[t.dtype]})"
             )
         elif t.dtype == "bool":
             lines.append(f"    {t.name} = torch.randint(0, 2, {tuple(t.shape)}, dtype=torch.int8).bool()")
+        elif spec.name in ("log", "sqrt", "rsqrt"):
+            # Positive domain so the reference and the kernel see the same
+            # finite inputs instead of NaN on the random draws.
+            lines.append(
+                f"    {t.name} = torch.rand({tuple(t.shape)}, dtype={TORCH_DTYPE[t.dtype]}) * 2.0 + 0.1"
+            )
+        elif spec.name == "div" and index == 1:
+            lines.append(
+                f"    {t.name} = torch.rand({tuple(t.shape)}, dtype={TORCH_DTYPE[t.dtype]}) * 2.0 + 0.5"
+            )
         else:
             lines.append(
                 f"    {t.name} = torch.randn({tuple(t.shape)}, dtype={TORCH_DTYPE[t.dtype]})"
             )
     return "\n".join(lines)
+
+
+def _case_specs(spec: TaskSpec) -> list[dict[str, object]]:
+    """Deterministic case matrix; every case must pass for overall success."""
+    cases: list[dict[str, object]] = [{"name": "normal", "kind": "as_is"}]
+    has_float = any(t.dtype in FLOAT_DTYPES for t in spec.inputs)
+    if not has_float:
+        cases.append({"name": "zeros", "kind": "zeros"})
+        cases.append({"name": "ones", "kind": "ones"})
+        return cases
+    cases.append({"name": "zeros", "kind": "zeros"})
+    cases.append({"name": "ones", "kind": "ones"})
+    if spec.name != "exp":  # exp(100) overflows fp32 in both kernel and golden
+        cases.append({"name": "large", "kind": "scale", "scale": 100.0})
+    cases.append({"name": "tiny", "kind": "scale", "scale": 0.001})
+    if spec.name in ("log", "sqrt", "rsqrt"):
+        for case in cases:
+            case["floor"] = 1e-3
+    if spec.name == "div":
+        for case in cases:
+            case["denom_floor"] = 1e-3
+    return cases
 
 
 def _golden_destructure(spec: TaskSpec) -> str:
@@ -180,13 +227,9 @@ def render_test(
     assert pr is not None
     input_names = ", ".join(t.name for t in spec.inputs)
     golden_args = ", ".join(t.name for t in spec.inputs)
-    flat_args = []
-    for t in spec.inputs:
-        if spec.family in ("elementwise_unary", "elementwise_binary"):
-            flat_args.append(f"{t.name}.reshape(-1)")
-        else:
-            flat_args.append(t.name)
     golden_hash = json.dumps(spec.to_dict(), sort_keys=True)
+    cases_json = json.dumps(_case_specs(spec), ensure_ascii=False)
+    reshape_code = _input_reshape(spec)
 
     return f'''#!/usr/bin/env python3
 """Auto-generated A5 TileLang verification runner (aiop).
@@ -253,11 +296,36 @@ RTOL = {pr.rtol!r}
 MAX_ABS = {pr.max_abs_error!r}
 REQUIRED_RATIO = {pr.matched_ratio!r}
 OUT_DTYPE = {TORCH_DTYPE[out_dtype]}
+CASE_SPECS = {cases_json}
 
 
-def make_inputs(device):
+def _apply_case(tensors, case):
+    kind = case.get("kind", "as_is")
+    scale = float(case.get("scale", 1.0))
+    floor = case.get("floor")
+    denom_floor = case.get("denom_floor")
+    out = []
+    for index, tensor in enumerate(tensors):
+        if kind == "zeros":
+            tensor = torch.zeros_like(tensor)
+        elif kind == "ones":
+            tensor = torch.ones_like(tensor)
+        elif kind == "scale":
+            tensor = tensor * scale
+        if tensor.is_floating_point():
+            if floor is not None and kind in ("zeros", "scale"):
+                tensor = tensor.abs() + float(floor)
+            if denom_floor is not None and index == 1:
+                tensor = tensor.abs() + float(denom_floor)
+        out.append(tensor)
+    return out
+
+
+def make_inputs(device, case=None):
+    case = case or CASE_SPECS[0]
 {_input_creation(spec)}
-    return [t.to(device) for t in [{", ".join(t.name for t in spec.inputs)}]]
+    tensors = _apply_case([{", ".join(t.name for t in spec.inputs)}], case)
+    return [t.to(device) for t in tensors]
 
 
 def golden({golden_args}):
@@ -285,6 +353,13 @@ def compare(actual, expected):
     }}
 
 
+def _compile_kernel():
+    return tilelang.compile(
+        kernel_mod.build(), target="ascend", out_idx=-1,
+        pass_configs={{"tl.device_compile_flags": DEVICE_FLAGS}},
+    )
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", default="")
@@ -300,22 +375,42 @@ def main():
         try:
             if args.device == "npu":
                 torch.npu.set_device(0)
-            inputs = make_inputs(args.device)
-            raw_inputs = inputs
-            {_input_reshape(spec)}
-            expected = golden(*[t.cpu() for t in raw_inputs])
-            kernel = tilelang.compile(
-                kernel_mod.build(), target="ascend", out_idx=-1,
-                pass_configs={{"tl.device_compile_flags": DEVICE_FLAGS}},
-            )
-            with torch.no_grad():
-                outputs = kernel(*inputs)
-                if args.device == "npu":
-                    torch.npu.synchronize()
-            outputs = outputs.reshape(expected.shape)
-            acc = compare(outputs, expected)
-            result.update(acc)
-            if acc.get("passed"):
+            kernel = _compile_kernel()
+            case_results = []
+            for case in CASE_SPECS:
+                inputs = make_inputs(args.device, case)
+                raw_inputs = inputs
+                {reshape_code}
+                expected = golden(*[t.cpu() for t in raw_inputs])
+                with torch.no_grad():
+                    outputs = kernel(*inputs)
+                    if args.device == "npu":
+                        torch.npu.synchronize()
+                outputs = outputs.reshape(expected.shape)
+                acc = compare(outputs, expected)
+                case_results.append({{
+                    "name": case["name"],
+                    "kind": case.get("kind", "as_is"),
+                    "status": "passed" if acc.get("passed") else "failed",
+                    "max_abs_error": acc.get("max_abs_error"),
+                    "matched_ratio": acc.get("matched_ratio"),
+                    "error": acc.get("error", ""),
+                }})
+            result["cases"] = case_results
+            failed = [c for c in case_results if c["status"] != "passed"]
+            if failed:
+                result["status"] = "failed"
+                result["error"] = f"{{len(failed)}}/{{len(case_results)}} cases failed: " + ", ".join(c["name"] for c in failed)
+                result["max_abs_error"] = failed[0].get("max_abs_error")
+                result["matched_ratio"] = failed[0].get("matched_ratio")
+            else:
+                normal = case_results[0]
+                result["status"] = "passed"
+                result["max_abs_error"] = normal.get("max_abs_error")
+                result["matched_ratio"] = normal.get("matched_ratio")
+                inputs = make_inputs(args.device, CASE_SPECS[0])
+                raw_inputs = inputs
+                {reshape_code}
                 for _ in range(max(0, args.warmup)):
                     kernel(*inputs)
                 if args.device == "npu":
@@ -332,9 +427,6 @@ def main():
                 result["p90_ms"] = times[min(len(times) - 1, int(len(times) * 0.9))]
                 result["min_ms"] = times[0]
                 result["samples"] = len(times)
-                result["status"] = "passed"
-            else:
-                result["status"] = "failed"
         except Exception as exc:  # noqa: BLE001
             import traceback
             result.update(status="error", error=f"{{type(exc).__name__}}: {{exc}}", traceback=traceback.format_exc()[-4000:])
@@ -342,14 +434,14 @@ def main():
     if result["status"] == "unavailable":
         print("[PRECISION_UNAVAILABLE]")
     else:
-        print("[PRECISION_PASS]" if result.get("passed") else "[PRECISION_FAIL]")
+        print("[PRECISION_PASS]" if result.get("status") == "passed" else "[PRECISION_FAIL]")
     print(json.dumps(result, indent=2))
     if args.json:
         with open(args.json, "w", encoding="utf-8") as fh:
             json.dump(result, fh, indent=2)
     if result["status"] == "unavailable":
         return 3
-    return 0 if result.get("passed") else 1
+    return 0 if result.get("status") == "passed" else 1
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ skill 负责**流程与约束**，本知识库负责**事实、速查与骨架**
 | 8 | [08-board-deployment.md](08-board-deployment.md) | 远端 A5 实测 | 上板报告 |
 | 9 | [09-verified-samples.md](09-verified-samples.md) | 找已验证样例 | 可复用 kernel 路径 |
 | 10 | [10-manifest-spec.md](10-manifest-spec.md) | 需求来自 TileOPs manifest | 契约绑定结果 + 可生成性判定 |
+| 11 | [11-trae-draft-mode.md](11-trae-draft-mode.md) | 没有 API key、用 IDE Agent 起草 | `prompt` → `draft.py` → 门禁 → `FIX_REQUEST.md` |
 
 ## 检索协议
 

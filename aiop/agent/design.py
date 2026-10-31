@@ -362,6 +362,69 @@ def build_open_design(
 """
 
 
+DRAFT_RULES = """\
+# 起草要求（给外部 Agent / Trae）
+
+## 硬性 API 规则（违反会在 L0 被静态检查拒绝）
+- 只 import `tilelang` 与 `tilelang.ascend.language as T`；禁止 torch / numpy / 文件 IO / print / eval。
+- 模块必须提供 `def build()`，返回一个 `@T.prim_func`。
+- `T.Kernel(blocks)` 只接受**一维** grid，**不允许** `threads=`；线程域只能写在 `T.SimtVF(threads=...)`。
+- 片上内存：`T.alloc_shared`（UB）、`T.alloc_l1` / `T.alloc_l0a` / `T.alloc_l0b` / `T.alloc_l0c`（Cube 路径）。
+- 归约只能用 `T.alloc_reducer(op="sum"|"max"|"min")` + `reducer_init` / `reducer_update` / `finalize_reducer`，
+  三者数量和顺序必须配对。
+- 禁止 `T.print` / `T.device_assert` / `T.annotate_unlimit_memory`；禁止动态循环边界。
+- UB 预算 208 KiB（物理 248 KiB，含 SIMT 上下文），L1 512 KiB，L0C 256 KiB；grid 上限 Vector 64 / Cube 32。
+- 张量签名必须与 `spec.yaml` 里声明的形状、dtype **逐字一致**（测试会按原样传参）。
+
+## 输出约定
+- 只声明**一个**输出张量（SPEC 的 `outputs[0]`）；多输出算子请在 kernel 内只写主输出。
+- 元数据输入（`role=metadata`，int32/int64）已由调用方填好合法索引，kernel 只读不校验。
+
+## 交付方式
+把代码写到本目录的 `draft.py`，然后执行：
+
+    python -m aiop generate --op <Op> --workload <N> --dtype-case <M> --strategy draft
+
+门禁失败时本目录会出现 `FIX_REQUEST.md`，按里面的错误改 `draft.py` 再跑一次。
+"""
+
+
+def build_draft_prompt(
+    spec: TaskSpec,
+    design_md: str,
+    knowledge_hits: list[dict[str, Any]],
+) -> str:
+    """Prompt handed to an external agent (Trae) that plays the LLM role."""
+    manifest = spec.manifest or {}
+    hits = "\n".join(
+        f"- `{h['doc']}` › {h['heading']} (score {h['score']})" for h in knowledge_hits[:5]
+    ) or "- (no knowledge hit)"
+    return f"""# 算子起草请求 — {manifest.get('op', spec.name)}
+
+> 模式：draft（外部 Agent 充当 LLM，aiop 只做确定性门禁）
+> workspace：本目录 · 产物：`draft.py`
+
+## 任务
+
+实现下面这个算子，写入 `draft.py`。
+
+- manifest 条目：`{manifest.get('op', spec.name)}`（family `{manifest.get('manifest_family', spec.family)}`）
+- workload：`{manifest.get('workload_label', '')}` (#{manifest.get('workload_index', 0)})
+- dtype case：#{manifest.get('dtype_case', 0)} `{json.dumps(manifest.get('dtype_assignment', {}))}`
+- 参考 API：`{spec.formula or 'n/a'}`
+
+{DRAFT_RULES}
+
+## 设计文档（已由 aiop 生成，含契约表与 roofline）
+
+{design_md}
+
+## 知识库召回
+
+{hits}
+"""
+
+
 def _formula_text(spec: TaskSpec) -> str:
     return {
         "elementwise_unary": f"{spec.name}(x) 逐元素",
