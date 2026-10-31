@@ -83,7 +83,25 @@ def generate(
                 path.write_text(source, encoding="utf-8")
                 return path, "llm"
             except Exception as exc:  # noqa: BLE001 - fall through to templates
-                (directory / "llm_error.log").write_text(str(exc), encoding="utf-8")
+                detail = f"{type(exc).__name__}: {exc}"
+                (directory / "llm_error.log").write_text(detail, encoding="utf-8")
+                if spec.family not in templates.TEMPLATE_NAME:
+                    first = detail.splitlines()[0][:400]
+                    raise RuntimeError(
+                        f"LLM kernel generation failed for family {spec.family!r}: {first}. "
+                        f"Full traceback: {directory / 'llm_error.log'}"
+                    ) from exc
+        else:
+            reason = (
+                "LLM is not configured: set agent.llm.base_url + agent.llm.model "
+                "and the API key env var"
+            )
+            (directory / "llm_error.log").write_text(reason + "\n", encoding="utf-8")
+            if spec.family not in templates.TEMPLATE_NAME:
+                raise RuntimeError(
+                    f"open-ended generation needs an LLM for family {spec.family!r}, "
+                    f"but {reason}"
+                )
     if spec.family not in templates.TEMPLATE_NAME:
         raise RuntimeError(
             f"open-ended generation produced no usable kernel for family "

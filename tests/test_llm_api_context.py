@@ -231,3 +231,60 @@ def build():
     assert result["status"] == "success_static_only", result["status"]
     assert result["generator"] == "template"
     assert result["compile"]["ok"] is True
+
+
+def _attention_spec() -> TaskSpec:
+    return TaskSpec(
+        "gqa_probe",
+        "attention",
+        [TensorSpec("Q", (4, 128, 64), "float16")],
+        [TensorSpec("O", (4, 128, 64), "float16")],
+        supported=False,
+        unsupported_reasons=["attention has no A5 template"],
+    )
+
+
+def test_open_mode_llm_failure_reports_root_cause(tmp_path, monkeypatch):
+    from aiop.runtime.hardware import build_open_plan
+
+    cfg = load_config()
+    cfg.agent.llm.enabled = True
+    cfg.agent.llm.base_url = "http://fake-llm"
+    cfg.agent.llm.model = "fake-model"
+    monkeypatch.setattr(LLMClient, "available", property(lambda self: True))
+
+    def timeout(self, *args, **kwargs):
+        raise RuntimeError("LLM request failed: <urlopen error timed out>")
+
+    monkeypatch.setattr(LLMClient, "generate_kernel", timeout)
+    spec = _attention_spec()
+    with pytest.raises(RuntimeError, match="timed out"):
+        generate(
+            spec,
+            build_open_plan(spec),
+            tmp_path,
+            cfg,
+            strategy="llm",
+            open_mode=True,
+        )
+    log = (tmp_path / "llm_error.log").read_text(encoding="utf-8")
+    assert "RuntimeError" in log
+    assert "timed out" in log
+
+
+def test_open_mode_without_llm_explains_configuration(tmp_path):
+    from aiop.runtime.hardware import build_open_plan
+
+    cfg = load_config()
+    cfg.agent.llm.enabled = False
+    spec = _attention_spec()
+    with pytest.raises(RuntimeError, match="needs an LLM"):
+        generate(
+            spec,
+            build_open_plan(spec),
+            tmp_path,
+            cfg,
+            strategy="llm",
+            open_mode=True,
+        )
+    assert "not configured" in (tmp_path / "llm_error.log").read_text(encoding="utf-8")

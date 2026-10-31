@@ -105,7 +105,7 @@ aiop 不是「让模型直接写代码」的代码生成器，而是**带门禁�
 | 错误自修正 | 静态/编译分类 + 保守 plan 回退 + LLM repair / `FIX_REQUEST.md` |
 | 仿真验证 | `npusim`/`local_npu`/`static` 三后端，精度混合容差 |
 | 跨服务器上板 | SSH 预检/部署/运行/指标/Profile，生成 `board_report.json` |
-| 可运行服务 | `python -m aiop serve` + HTTP API + CLI + pytest（142 个测试） |
+| 可运行服务 | `python -m aiop serve` + HTTP API + CLI + pytest（144 个测试） |
 
 ## 3. 环境依赖
 
@@ -583,7 +583,7 @@ aiop/
 ├── examples/                   # softmax.yaml + spec/（25 个 manifest YAML）
 ├── samples/                    # 8 个已验证算子样例 + index.json
 ├── scripts/                    # build_samples.py / sync_skills.sh
-├── tests/                      # 142 个单元 + 端到端测试
+├── tests/                      # 144 个单元 + 端到端测试
 ├── config/aiop.yaml
 ├── reports/                    # 基准报告
 └── workspace/                  # 运行时任务产物（git 忽略）
@@ -953,7 +953,7 @@ Skill：[.agent/skills/aiop-op-pipeline/SKILL.md](.agent/skills/aiop-op-pipeline
 ## 13. 测试与基准
 
 ```bash
-python -m pytest -q              # 142 个测试（静态/规划/manifest/open/draft/契约/搜索/审计/进度/HTTP/导出/执行开关/指令日志/端到端）
+python -m pytest -q              # 144 个测试（静态/规划/manifest/open/draft/契约/搜索/审计/进度/HTTP/导出/执行开关/指令日志/端到端）
 python -m pytest -q -m slow      # 仅端到端（会调用 bisheng）
 
 python -m aiop eval --cases aiop/eval/cases.yaml --no-simulate \
@@ -1025,7 +1025,7 @@ python -m aiop campaign --op GemmFwdOp --workload 1 --dtype-case 0 --out reports
 | `v0.1.0+manifest/llm` | `242a6ad` `feat:llm` | TileOPs manifest 绑定（205 条目/23 映射）、LLM open 模式与 repair、GEMM 非 fp32 输出 cast、8 个 manifest 基准用例（36 总数）、知识库 10、`examples/spec/` 25 个 manifest YAML（含 `types.yaml`） |
 | `v0.1.0+draft`（工作区，未提交） | — | `prompt` 命令、`--strategy draft`/`--draft`、`FIX_REQUEST.md`、`golden_draft.py`、知识库 11 |
 | `v0.1.0+campaign`（工作区，未提交） | — | TaskContract、SkillRegistry、有界计划搜索、LoweringAudit、EvidenceStore/Diagnoser、多场景仿真 + 负例门禁、`campaign` 命令、统一 `run.log` 与终端进度、HTTP `/v1/commands` + `/v1/jobs`、`export` 单文件测试；测试 71 → 90 |
-| `v0.1.0+exec`（工作区，未提交） | — | 全量指令日志 `commands.log`（执行前记录完整 argv/上下文）、`steps.compile/simulate/npu/profile` 独立开关（配置 + CLI + 环境变量）、非法配置校验、按需执行与环境不支持自动跳过；测试 124 → 142 |
+| `v0.1.0+exec`（工作区，未提交） | — | 全量指令日志 `commands.log`（执行前记录完整 argv/上下文）、`steps.compile/simulate/npu/profile` 独立开关（配置 + CLI + 环境变量）、非法配置校验、按需执行与环境不支持自动跳过；LLM 失败根因回显；测试 124 → 144 |
 
 > `pyproject.toml` 当前版本号仍为 `0.1.0`；上表用提交批次标记功能适用版本，便于对应代码状态。
 

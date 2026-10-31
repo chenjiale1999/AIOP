@@ -109,7 +109,14 @@ def cmd_generate(args) -> int:
                 print(f"unsupported: {reason}")
             print(f"design: {task_dir / 'DESIGN.md'}")
             return 2
-        print(f"kernel: {result['artifacts']['kernel']}")
+        kernel = result["artifacts"].get("kernel", "")
+        if kernel and Path(kernel).is_file():
+            print(f"kernel: {kernel}")
+        llm_log = task_dir / "llm_error.log"
+        if result["status"].startswith("blocked") and llm_log.is_file():
+            print(f"llm:    {llm_log}")
+            for line in llm_log.read_text(encoding="utf-8").strip().splitlines()[:3]:
+                print(f"        {line}")
         print(f"report: {task_dir / 'report.md'}")
         for note in result.get("notes", []):
             print(f"note:   {note}")
