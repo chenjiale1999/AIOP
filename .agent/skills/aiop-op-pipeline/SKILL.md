@@ -28,6 +28,24 @@ description: "昇腾 A5（Ascend 950 / dav-3510）+ TileLang 算子端到端生�
 
 缺失的能力必须如实标记为 `unavailable`/`skipped`，**禁止伪造通过**。
 
+## 0.1 双基准强制规则（所有生成与修复必须遵守）
+
+1. **同时参考两类实现**：
+   - CUDA 对等实现：`ref_reops/TileOPs/src/tileops/kernels/<family>/` 中同名算子的 `*Kernel`，
+     决定功能语义、输入输出定义、计算顺序与精度预期；
+   - Ascend A5 已验证实现：`ref_reops/TileOPs/src/tileops/kernels/ascend/` 中的
+     `Ascend*Kernel`，决定代码结构、命名、注释、注册方式与硬件适配。
+   检索结果见任务目录 `references.json` 与 `reference_context.md`（`aiop` 自动生成）。
+2. **A5 适配**：只用 TileLang Ascend A5 API；遵守 UB 208 KiB / L1 512 KiB / L0C 256 KiB、
+   一维 `T.Kernel` grid、`T.SimtVF`/`T.SimdVF` 线程域。
+3. **精度**：输出与 CUDA 语义基准的 fp32 绝对误差 ≤ **1e-5**；fp16/bf16 以 dtype 分辨率
+   为下限（脚本记录 `policy=dtype_floor` 与 `declared_atol=1e-5`）。
+4. **集成**：模块同时提供 `def build()`、`class Ascend<Stem>Kernel` 与
+   `register_kernel_type("<Op>", "ascend", <class>)`；目标路径由 `references.json` 给出，
+   `python -m aiop integrate <task> [--apply]` 校验/安装并跑上游测试。
+5. **门禁**：`blocked_reference`（缺基准）、`blocked_parity`（1e-5 未过）、
+   `blocked_performance`（`perf.target` 未达）都必须如实上报，不得绕过。
+
 ## 1. 流水线总览
 
 ```text

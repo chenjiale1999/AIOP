@@ -162,6 +162,20 @@ class LoggingConfig:
 
 
 @dataclass
+class ReferenceConfig:
+    """Dual-baseline alignment with the TileOPs CUDA/Ascend kernels."""
+
+    tileops_repo: str = ""
+    enabled: bool = True
+    require_cuda: bool = True
+    require_ascend: bool = True
+    max_chars: int = 40000
+    parity_atol: float = 1e-5
+    enforce_parity: bool = True
+    integration_required: bool = True
+
+
+@dataclass
 class BoardConfig:
     host: str = ""
     port: int = 22
@@ -200,6 +214,7 @@ class Config:
     simulation: SimulationConfig = field(default_factory=SimulationConfig)
     steps: StepsConfig = field(default_factory=StepsConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    references: ReferenceConfig = field(default_factory=ReferenceConfig)
     board: BoardConfig = field(default_factory=BoardConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     raw: dict[str, Any] = field(default_factory=dict)
@@ -317,12 +332,27 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     cfg.raw = data
     _validate_section(data, "steps", {"compile", "simulate", "npu", "profile"})
     _validate_section(data, "logging", {"command_level", "echo_commands"})
+    _validate_section(
+        data,
+        "references",
+        {
+            "tileops_repo",
+            "enabled",
+            "require_cuda",
+            "require_ascend",
+            "max_chars",
+            "parity_atol",
+            "enforce_parity",
+            "integration_required",
+        },
+    )
     _apply_dataclass(cfg.paths, data.get("paths"))
     _apply_dataclass(cfg.cann, data.get("cann"))
     _apply_dataclass(cfg.compile, data.get("compile"))
     _apply_dataclass(cfg.simulation, data.get("simulation"))
     _apply_dataclass(cfg.steps, data.get("steps"))
     _apply_dataclass(cfg.logging, data.get("logging"))
+    _apply_dataclass(cfg.references, data.get("references"))
     _apply_dataclass(cfg.board, data.get("board"))
     _apply_dataclass(cfg.agent, data.get("agent"))
     _apply_dataclass(cfg.agent.llm, (data.get("agent") or {}).get("llm"))
@@ -334,6 +364,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         "AIOP_CANN_HOME": (cfg.cann, "home"),
         "AIOP_NPUSIM": (cfg.cann, "npusim"),
         "AIOP_TILEOPS_MANIFEST": (cfg.paths, "tileops_manifest"),
+        "AIOP_TILEOPS_REPO": (cfg.references, "tileops_repo"),
         "AIOP_SOC_VERSION": (cfg.cann, "soc_version"),
         "AIOP_BOARD_HOST": (cfg.board, "host"),
         "AIOP_BOARD_KEY": (cfg.board, "key"),
@@ -383,6 +414,28 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         "logging.echo_commands",
         os.environ.get("AIOP_COMMAND_LOG_ECHO", cfg.logging.echo_commands),
     )
+    cfg.references.tileops_repo = _expand(cfg.references.tileops_repo)
+    for key in (
+        "enabled",
+        "require_cuda",
+        "require_ascend",
+        "enforce_parity",
+        "integration_required",
+    ):
+        raw = os.environ.get(f"AIOP_REFERENCE_{key.upper()}", getattr(cfg.references, key))
+        setattr(cfg.references, key, _coerce_bool(f"references.{key}", raw))
+    raw_atol = os.environ.get("AIOP_REFERENCE_ATOL", cfg.references.parity_atol)
+    try:
+        cfg.references.parity_atol = float(raw_atol)
+        cfg.references.max_chars = int(cfg.references.max_chars)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(
+            f"invalid references.parity_atol/max_chars: {exc}"
+        ) from exc
+    if cfg.references.parity_atol < 0:
+        raise ConfigError("references.parity_atol must be >= 0")
+    if cfg.references.max_chars < 0:
+        raise ConfigError("references.max_chars must be >= 0")
 
     if cfg.agent.llm.base_url and cfg.agent.llm.model:
         cfg.agent.llm.enabled = True

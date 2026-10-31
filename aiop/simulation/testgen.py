@@ -220,8 +220,38 @@ def _case_key(shape: list[list[int]], datatype: list[str]) -> str:
     return json.dumps({"shape": shape, "datatype": datatype}, sort_keys=True)
 
 
+DTYPE_REFERENCE_FLOOR = {
+    "float32": 0.0,
+    "float16": 2.0**-10,
+    "bfloat16": 2.0**-7,
+    "float8_e4m3fn": 2.0**-3,
+    "float8_e5m2": 2.0**-2,
+    "hifloat8": 2.0**-3,
+}
+
+
+def reference_precision(output_dtype: str, atol: float) -> dict[str, object]:
+    """Resolve the CUDA-parity gate for one output dtype.
+
+    ``1e-5`` is enforced verbatim for float32. For fp16/bf16 a 1e-5 absolute
+    gate is below one ULP, so the gate falls back to the dtype resolution floor
+    and records that policy instead of silently claiming 1e-5.
+    """
+    floor = DTYPE_REFERENCE_FLOOR.get(output_dtype, 0.0)
+    strict = output_dtype == "float32"
+    return {
+        "declared_atol": float(atol),
+        "atol": float(max(float(atol), floor)),
+        "dtype_floor": float(floor),
+        "policy": "strict" if strict else "dtype_floor",
+    }
+
+
 def _case_entries(
-    variant: KernelVariant, index: int
+    variant: KernelVariant,
+    index: int,
+    *,
+    reference_atol: float = 0.0,
 ) -> list[dict[str, object]]:
     spec = variant.spec
     shape = [list(t.shape) for t in spec.inputs]
@@ -229,6 +259,7 @@ def _case_entries(
     precision = spec.precision
     assert precision is not None
     output = spec.output
+    reference = reference_precision(output.dtype, reference_atol)
     reshape, reshape_d = _reshape_mode(spec)
     base = {
         "shape": shape,
@@ -253,6 +284,16 @@ def _case_entries(
             "rtol": float(precision.rtol),
             "max_abs_error": float(precision.max_abs_error),
             "matched_ratio": float(precision.matched_ratio),
+            **(
+                {
+                    "reference_atol": reference["atol"],
+                    "reference_declared_atol": reference["declared_atol"],
+                    "reference_dtype_floor": reference["dtype_floor"],
+                    "reference_policy": reference["policy"],
+                }
+                if reference_atol > 0
+                else {}
+            ),
         },
         "bytes": int(spec.bytes()),
         "flops": int(spec.flops()),
@@ -305,6 +346,8 @@ def render_test(
     golden_override: str | None = None,
     kernel_source: str | None = None,
     variants: list[KernelVariant] | None = None,
+    reference_atol: float = 0.0,
+    enforce_reference: bool = True,
 ) -> str:
     if variants is None:
         variants = plan_variants(
@@ -383,7 +426,11 @@ def render_test(
             f"{golden_body}\n"
             f"    return {output_expr}.to(OUT_DTYPE_AIOP_{index})\n"
         )
-        cases.extend(_case_entries(variant, index))
+        cases.extend(
+            _case_entries(variant, index, reference_atol=reference_atol)
+            if enforce_reference
+            else _case_entries(variant, index)
+        )
 
     future_block = "".join(line + "\n" for line in sorted(futures))
     cases_json = pformat(cases, width=100, sort_dicts=False)
@@ -402,6 +449,24 @@ def render_test(
     kernel_text = "\n".join(kernel_blocks).rstrip()
     golden_text = "\n\n".join(golden_blocks).rstrip()
     dtype_text = "\n".join(out_dtype_consts)
+    reference_json = pformat(
+        {
+            "declared_atol": float(reference_atol),
+            "enforced": bool(enforce_reference and reference_atol > 0),
+            "dtype_floor": dict(DTYPE_REFERENCE_FLOOR),
+        },
+        width=100,
+        sort_dicts=False,
+    )
+    perf_json = pformat(
+        {
+            "metric": spec.perf.metric,
+            "target": spec.perf.target,
+            "unit": spec.perf.unit,
+        },
+        width=100,
+        sort_dicts=False,
+    )
     spec_digest = hashlib.sha256(
         json.dumps(spec.to_dict(), sort_keys=True).encode("utf-8")
     ).hexdigest()
@@ -533,6 +598,13 @@ COVERAGE_AIOP = {coverage_json}
 
 SYNC_AIOP = False
 
+# CUDA-parity gate: compare against the semantic reference captured by the
+# golden. fp32 uses the declared atol verbatim; fp16/bf16 use the dtype floor.
+REFERENCE_AIOP = {reference_json}
+
+# Performance acceptance target (enforced only when `target` is not None).
+PERF_TARGET_AIOP = {perf_json}
+
 
 {golden_text}
 
@@ -604,6 +676,8 @@ def compare_aiop(actual, expected, precision):
     if a.numel() != e.numel():
         return {{
             "passed": False,
+            "base_passed": False,
+            "reason": "size_mismatch",
             "error": f"size mismatch {{a.numel()}} vs {{e.numel()}}",
             "total_elements": int(a.numel()),
         }}
@@ -616,18 +690,38 @@ def compare_aiop(actual, expected, precision):
     rel = diff / denom.clamp_min(1e-12)
     rel = rel.nan_to_num(posinf=1e30)
     total = int(diff.numel())
+    max_abs = float(finite.max().item()) if total else 0.0
+    base_passed = bool(
+        matched_ratio >= float(precision["matched_ratio"])
+        and max_abs <= float(precision["max_abs_error"])
+    )
+    reference_atol = float(precision.get("reference_atol", 0.0))
+    reference = None
+    if reference_atol > 0:
+        reference = {{
+            "atol": reference_atol,
+            "declared_atol": float(precision.get("reference_declared_atol", reference_atol)),
+            "dtype_floor": float(precision.get("reference_dtype_floor", 0.0)),
+            "policy": precision.get("reference_policy", "strict"),
+            "max_abs_error": max_abs,
+            "passed": bool(max_abs <= reference_atol),
+        }}
+    reference_passed = True if reference is None else bool(reference["passed"])
     return {{
-        "passed": bool(
-            matched_ratio >= float(precision["matched_ratio"])
-            and float(finite.max().item()) <= float(precision["max_abs_error"])
+        "passed": bool(base_passed and reference_passed),
+        "base_passed": base_passed,
+        "reason": (
+            "reference_parity" if base_passed and not reference_passed
+            else ("accuracy" if not base_passed else "passed")
         ),
-        "max_abs_error": float(finite.max().item()) if total else 0.0,
+        "max_abs_error": max_abs,
         "mean_abs_error": float(finite.mean().item()) if total else 0.0,
         "max_rel_error": float(rel.max().item()) if total else 0.0,
         "mean_rel_error": float(rel.mean().item()) if total else 0.0,
         "matched_ratio": matched_ratio,
         "mismatched_elements": int((~matched).sum().item()) if total else 0,
         "total_elements": total,
+        "reference": reference,
     }}
 
 
@@ -750,6 +844,7 @@ def main_aiop():
                 )
                 entry.update(
                     status="passed" if precision.get("passed") else "failed",
+                    failure_kind="" if precision.get("passed") else precision.get("reason", "accuracy"),
                     precision=precision,
                     performance=performance,
                 )
@@ -783,6 +878,14 @@ def main_aiop():
         statuses = [entry["status"] for entry in case_results]
         precisions = [entry["precision"] for entry in case_results if "precision" in entry]
         performances = [entry["performance"] for entry in case_results if "performance" in entry]
+        references = [p["reference"] for p in precisions if p.get("reference")]
+        reference_enabled = bool(REFERENCE_AIOP.get("enforced")) and bool(references)
+        reference_passed = (
+            all(bool(item.get("passed")) for item in references) if reference_enabled else None
+        )
+        reference_max_abs = max(
+            (float(item.get("max_abs_error", 0.0)) for item in references), default=0.0
+        )
         summary = {{
             "total": len(case_results),
             "passed": statuses.count("passed"),
@@ -800,19 +903,94 @@ def main_aiop():
             "compute_ms": statistics.median([p["compute_ms"] for p in performances]) if performances else 0.0,
             "bandwidth_gbps": statistics.median([p["bandwidth_gbps"] for p in performances]) if performances else 0.0,
             "throughput_gflops": statistics.median([p["throughput_gflops"] for p in performances]) if performances else 0.0,
+            "reference_enabled": reference_enabled,
+            "reference_passed": reference_passed,
+            "reference_max_abs_error": reference_max_abs,
+            "reference_atol": float(REFERENCE_AIOP.get("declared_atol", 0.0)),
         }}
         result["summary"] = summary
         result["latency_ms"] = summary["latency_ms"]
         result["max_abs_error"] = summary["max_abs_error"]
         result["matched_ratio"] = summary["matched_ratio"]
+
+        target_metric = str(PERF_TARGET_AIOP.get("metric", "latency"))
+        target_value = PERF_TARGET_AIOP.get("target")
+        metric_map = {{
+            "latency": summary["latency_ms"],
+            "compute": summary["compute_ms"],
+            "bandwidth": summary["bandwidth_gbps"],
+            "throughput": summary["throughput_gflops"],
+        }}
+        measured = metric_map.get(target_metric, summary["latency_ms"])
+        perf_enforced = target_value is not None and bool(performances)
+        perf_passed = None
+        if target_value is not None:
+            limit = float(target_value)
+            perf_passed = (
+                bool(measured <= limit)
+                if target_metric in ("latency", "compute")
+                else bool(measured >= limit)
+            )
+            if not performances:
+                perf_passed = False
+        result["performance_target"] = {{
+            "metric": target_metric,
+            "target": target_value,
+            "unit": PERF_TARGET_AIOP.get("unit", "ms"),
+            "value": measured,
+            "enforced": perf_enforced,
+            "passed": perf_passed,
+        }}
+
         executable_statuses = [s for s in statuses if s != "unsupported"]
+        precision_passed = bool(executable_statuses) and all(
+            s == "passed" for s in executable_statuses
+        )
+        functional_passed = bool(executable_statuses) and not any(
+            s == "error" for s in executable_statuses
+        )
+        failure_kind = ""
+        if not precision_passed:
+            failed_kinds = {{
+                entry.get("failure_kind", "accuracy")
+                for entry in case_results
+                if entry["status"] == "failed"
+            }}
+            failure_kind = (
+                "reference_parity"
+                if failed_kinds and failed_kinds == {{"reference_parity"}}
+                else ("accuracy" if failed_kinds else "")
+            )
+        if precision_passed and perf_passed is False:
+            failure_kind = "performance"
+        result["verification"] = {{
+            "functional": {{
+                "passed": functional_passed,
+                "executed": len(executable_statuses),
+                "errors": statuses.count("error"),
+            }},
+            "precision": {{
+                "passed": precision_passed,
+                "max_abs_error": summary["max_abs_error"],
+                "matched_ratio": summary["matched_ratio"],
+            }},
+            "reference": {{
+                "enabled": reference_enabled,
+                "atol": float(REFERENCE_AIOP.get("declared_atol", 0.0)),
+                "passed": reference_passed,
+                "max_abs_error": reference_max_abs,
+            }},
+            "performance": result["performance_target"],
+            "coverage": result["coverage"],
+        }}
         if not executable_statuses:
             result["status"] = "failed"
             result["error"] = "no executable cases for this task"
         else:
             result["status"] = (
-                "passed" if all(s == "passed" for s in executable_statuses) else "failed"
+                "passed" if precision_passed and perf_passed is not False else "failed"
             )
+        result["failure_kind"] = failure_kind if result["status"] == "failed" else ""
 
     if result["status"] == "unavailable":
         print("[PRECISION_UNAVAILABLE]")
@@ -846,6 +1024,8 @@ def write_test(
     kernel_source: str | None = None,
     variants: list[KernelVariant] | None = None,
     enumerate_variants: bool = True,
+    reference_atol: float = 0.0,
+    enforce_reference: bool = True,
 ) -> Path:
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -876,6 +1056,8 @@ def write_test(
             golden_override=golden_override,
             kernel_source=kernel_source,
             variants=variants,
+            reference_atol=reference_atol,
+            enforce_reference=enforce_reference,
         ),
         encoding="utf-8",
     )

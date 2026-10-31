@@ -91,6 +91,8 @@ aiop 不是「让模型直接写代码」的代码生成器，而是**带门禁�
 | **结构化用例矩阵** | manifest workload×dtype 全枚举；每个 `(shape, datatype)` 组合独立 kernel 变体；逐用例输出精度/性能指标与覆盖率 | 工作区（未提交） |
 | **全量指令日志** | 编译/仿真/上板全部子进程命令在执行前写入 `commands.log`：完整 argv、shell 命令、cwd、超时与上下文，不截断；级别 `off/error/warn/info/debug` 可调 | 工作区（未提交） |
 | **执行步骤开关** | `steps.compile/simulate/npu/profile` 四个独立开关（配置文件 + CLI + 环境变量）；环境不支持的环节自动跳过并记录原因 | 工作区（未提交） |
+| **双基准参考对齐** | 自动检索 TileOPs 的 CUDA 同层实现与已验证 Ascend A5 实现，注入设计与 LLM/draft 提示；1e-5 参考精度门禁 + 性能目标 + 仓库集成校验 | 工作区（未提交） |
+| **仓库集成** | `aiop integrate` 校验 `Ascend<Stem>Kernel`、`register_kernel_type(..., "ascend", ...)`、目标路径与上游测试，`--apply` 可安装并跑测试 | 工作区（未提交） |
 | 知识库 10/11 | manifest 契约规则、Trae draft 全流程 | `242a6ad` / 工作区 |
 
 ### 2.1 端到端能力对照
@@ -105,7 +107,7 @@ aiop 不是「让模型直接写代码」的代码生成器，而是**带门禁�
 | 错误自修正 | 静态/编译分类 + 保守 plan 回退 + LLM repair / `FIX_REQUEST.md` |
 | 仿真验证 | `npusim`/`local_npu`/`static` 三后端，精度混合容差 |
 | 跨服务器上板 | SSH 预检/部署/运行/指标/Profile，生成 `board_report.json` |
-| 可运行服务 | `python -m aiop serve` + HTTP API + CLI + pytest（144 个测试） |
+| 可运行服务 | `python -m aiop serve` + HTTP API + CLI + pytest（154 个测试） |
 
 ## 3. 环境依赖
 
@@ -373,6 +375,8 @@ workspace/<task>/
 ├── manifest.json / state.json   # 任务清单与阶段状态
 ├── run.log                      # 统一进度日志（逐行、带时间戳/阶段）
 ├── commands.log                 # 全量指令日志（JSONL，执行前写入完整 argv/上下文）
+├── references.json / reference_context.md   # 双基准路径、类名、完整源码与对齐规则
+├── integration.json             # TileOPs 集成校验（类名/注册/目标路径/上游测试）
 ├── contract.json                # TaskContract（语义/ABI/精度/性能目标/资源上限/义务）
 ├── skill.lock / context_manifest.json   # 技能选择、内容锁定、知识召回
 ├── frontier.json                # 计划搜索候选与门禁结果（--search）
@@ -397,8 +401,11 @@ workspace/<task>/
 | `blocked_generate` | kernel 来源异常（如 draft 缺失/无 `build()`） | 修正输入后重跑 |
 | `blocked_environment` | CANN 过旧或主机头文件不兼容 | 升级 CANN / 调整 `compile.device_flags` |
 | `blocked_accuracy` | L3 精度未过（重试后） | 看 `simulation_report.json` |
+| `blocked_parity` | 与 CUDA 语义基准的误差超过参考门限（fp32 1e-5） | 看 `simulation_report.json` 的 `verification.reference` |
+| `blocked_performance` | 精度通过但未达到 `perf.target` | 看 `verification.performance`，调 tiling 或放宽目标 |
 | `blocked_board` | 上板失败/预检失败 | 看 `board_report.json` 与 `board_run.log` |
 | `blocked_unsupported` | 无模板且未配置 LLM/draft | 配置 LLM 或 `--strategy draft` |
+| `blocked_reference` | 清单算子缺少 CUDA 对等实现或 Ascend 基准 | 设置 `AIOP_TILEOPS_REPO` 或放宽 `references.require_*` |
 
 `verified=True` 仅在 **模板模式 + 编译通过 + L3 通过 + golden 为 aiop 内置参考** 时成立。
 open 模式（LLM/draft 起草的无模板 family）恒为 `False`；draft 用在**有内置 golden 的 family**
@@ -561,6 +568,38 @@ python -m aiop generate --spec examples/softmax.yaml \
   会抛出 `ConfigError`，CLI 以退出码 2 输出 `config error: ...`。
 - 执行分支逐条核对结论见 [reports/execution_branch_analysis.md](reports/execution_branch_analysis.md)（生成物，git 忽略）。
 
+### 6.12 双基准参考与上游集成
+
+**双基准检索**：每个算子生成前自动定位两个参考实现（源码按正则索引，不 import、不编译）：
+
+| 基准 | 来源 | 用途 |
+|---|---|---|
+| CUDA 对等实现 | `src/tileops/kernels/<family>/...` 中名称匹配的 `*Kernel` 类 | 功能语义、输入输出、计算顺序、精度预期 |
+| Ascend A5 已验证实现 | `src/tileops/kernels/ascend/...` 的 `Ascend*Kernel` + `register_kernel_type` | 结构、命名、注释、注册、硬件适配 |
+
+- 仓库自动发现顺序：`AIOP_TILEOPS_REPO` > `references.tileops_repo` > `<repo>/ref_reops/TileOPs` > manifest 所在 checkout > 同级 `TileOPs`。
+- 产物：`references.json`（路径/类名/目标集成路径）、`reference_context.md`（注入 LLM/draft 的完整双基准与对齐规则）；`DESIGN.md` 追加“基准实现对齐”章节。
+- **硬门禁**：仅对 TileOPs manifest 中真实声明的算子生效。缺少 CUDA 对等实现或整个 Ascend 基准时直接 `blocked_reference`，不生成 kernel。手写 TaskSpec 只做上下文注入，不阻断。
+
+**1e-5 参考精度**：生成的 `test_<op>.py` 内嵌 `REFERENCE_AIOP`，每 case 计算与语义基准的 `reference.max_abs_error`：
+
+- `float32` 输出：严格 `atol ≤ 1e-5`（`policy=strict`）；
+- `float16/bfloat16/fp8`：1e-5 低于 1 ULP，按 dtype 分辨率下限执行（`policy=dtype_floor`，记录 `declared_atol=1e-5` 与 `dtype_floor`），避免伪造不可达指标；
+- 失败标记 `failure_kind=reference_parity`，任务状态 `blocked_parity`。
+
+**性能达标**：spec 的 `perf` 通过 `PERF_TARGET_AIOP` 内嵌；`target` 非空时按 `metric`（latency/compute 越小越好，bandwidth/throughput 越大越好）判定，失败标记 `failure_kind=performance`、状态 `blocked_performance`；未设目标时只记录实测指标。
+
+**集成校验**：`integration.json` 检查 `INT000` top-level `build()`、`INT002` `Ascend<Stem>Kernel`、`INT003` `register_kernel_type("<op>", "ascend", <class>)`、`INT004` TileOPs kernel 基类、`INT005` 目标路径、`INT006` 上游测试。open 模式（真实 manifest 算子）未就绪时进入静态门禁并触发 repair；模板模式只告警。
+
+```bash
+# 只校验
+python -m aiop integrate <task>
+# 安装到 TileOPs 目标路径并跑上游测试
+python -m aiop integrate <task> --apply --repo /path/to/TileOPs
+# 覆盖已有文件 / 跳过测试
+python -m aiop integrate <task> --apply --force --no-run-tests
+```
+
 ## 7. 架构与目录
 
 ```text
@@ -568,8 +607,9 @@ aiop/
 ├── aiop/                       # 可执行 Agent 服务
 │   ├── agent/                  # 编排、契约、技能、计划搜索、证据、审计、进度、campaign
 │   ├── generation/             # 模板渲染、LLM 适配、修复、draft 读取
-│   ├── checks/                 # 静态检查、隔离编译门禁
+│   ├── checks/                 # 静态检查、隔离编译门禁、TileOPs 集成校验
 │   ├── simulation/             # 用例矩阵、测试脚本生成、npusim/local NPU
+│   ├── references.py           # 双基准检索（CUDA 同层 + 已验证 Ascend A5）
 │   ├── board/                  # SSH 预检/部署/实测
 │   ├── knowledge/              # BM25 检索
 │   ├── eval/                   # 36 用例基准套件
@@ -583,7 +623,7 @@ aiop/
 ├── examples/                   # softmax.yaml + spec/（25 个 manifest YAML）
 ├── samples/                    # 8 个已验证算子样例 + index.json
 ├── scripts/                    # build_samples.py / sync_skills.sh
-├── tests/                      # 144 个单元 + 端到端测试
+├── tests/                      # 154 个单元 + 端到端测试
 ├── config/aiop.yaml
 ├── reports/                    # 基准报告
 └── workspace/                  # 运行时任务产物（git 忽略）
@@ -700,6 +740,14 @@ Campaign 实测（本机）：`softmax_2`（[examples/softmax.yaml](examples/sof
 | `steps.profile` | `true` | 精度通过后是否采集流水线 profile |
 | `logging.command_level` | `info` | 指令日志级别：`off`/`error`/`warn`/`info`/`debug`；info/debug 落盘 |
 | `logging.echo_commands` | `false` | 是否把完整命令行回显到 stderr |
+| `references.tileops_repo` | 自动探测 | TileOPs 参考仓（同时含 CUDA 与 ascend kernels） |
+| `references.enabled` | `true` | 是否启用双基准检索与注入 |
+| `references.require_cuda` | `true` | manifest 算子必须存在 CUDA 对等实现，否则 `blocked_reference` |
+| `references.require_ascend` | `true` | 必须存在可用 Ascend A5 基准（支持同族风格基准） |
+| `references.max_chars` | `40000` | 单份参考源码注入 LLM/draft 的字符上限（完整路径始终记录） |
+| `references.parity_atol` | `1e-5` | fp32 输出与语义基准的绝对误差门限 |
+| `references.enforce_parity` | `true` | 是否把参考精度写入测试脚本并作为通过条件 |
+| `references.integration_required` | `true` | 是否执行 TileOPs 集成校验（open 模式真实 manifest 算子为硬门禁） |
 | `agent.max_attempts` | `3` | 生成/静态/编译的最大尝试轮数 |
 | `agent.max_sim_attempts` | `2` | 预留配置项（当前实现仿真失败后固定再试 1 次） |
 | `agent.llm.enabled` | `false` | 配置了 `base_url` + `model` 时自动置为 `true` |
@@ -716,6 +764,13 @@ Campaign 实测（本机）：`softmax_2`（[examples/softmax.yaml](examples/sof
 | `AIOP_TILELANG_REPO` | `paths.tilelang_repo` | A5 原生仓 |
 | `AIOP_WORKSPACE` | `paths.workspace` | 产物根目录 |
 | `AIOP_TILEOPS_MANIFEST` | `paths.tileops_manifest` | manifest 目录/文件 |
+| `AIOP_TILEOPS_REPO` | `references.tileops_repo` | TileOPs 参考仓（CUDA + ascend kernels） |
+| `AIOP_REFERENCE_ENABLED` | `references.enabled` | 双基准开关 |
+| `AIOP_REFERENCE_REQUIRE_CUDA` | `references.require_cuda` | 是否强制 CUDA 对等实现 |
+| `AIOP_REFERENCE_REQUIRE_ASCEND` | `references.require_ascend` | 是否强制 Ascend 基准 |
+| `AIOP_REFERENCE_ATOL` | `references.parity_atol` | 参考精度门限 |
+| `AIOP_REFERENCE_ENFORCE_PARITY` | `references.enforce_parity` | 是否启用参考精度门禁 |
+| `AIOP_REFERENCE_INTEGRATION_REQUIRED` | `references.integration_required` | 是否启用集成校验 |
 | `AIOP_CANN_HOME` | `cann.home` | CANN 安装目录 |
 | `AIOP_NPUSIM` | `cann.npusim` | npusim 可执行文件 |
 | `AIOP_SOC_VERSION` | `cann.soc_version` | 目标芯片 |
@@ -745,6 +800,7 @@ Campaign 实测（本机）：`softmax_2`（[examples/softmax.yaml](examples/sof
 | `campaign` | 六步全链路 + 汇总报告 | 与 `generate` 相同的输入选择器与步骤开关、`--search/--no-search`、`--search-budget`、`--no-progress`、`--out` |
 | `prompt` | 写 `PROMPT.md` 供 IDE Agent 起草 | 与 `generate` 相同的输入选择器 |
 | `export` | 导出单文件可搬运测试 | `task`、`--out`（默认 `<task>/export`） |
+| `integrate` | 校验/安装到 TileOPs | `task`、`--repo`、`--apply`、`--force`、`--run-tests/--no-run-tests`、`--json` |
 | `check` | 只跑 L0 静态 | `task` |
 | `compile` | 只跑 L1/L2 | `task`、`--command-log-level`、`--command-log-echo` |
 | `simulate` | 只跑 L3 | `task`、`--command-log-level`、`--command-log-echo` |
@@ -917,6 +973,9 @@ write_campaign_report(task_dir, result, negative=negative)
 | 全量指令日志 | `aiop/runtime/command_log.py`、`checks/compiler.py`、`simulation/runner.py`、`board/runner.py` | 执行前写 `commands.log`（完整 argv/上下文/超时），级别可配 |
 | 执行步骤开关 | `aiop/config.py`、`aiop/agent/orchestrator.py`、`aiop/cli.py` | `steps.compile/simulate/npu/profile`；CLI/环境变量覆盖；不支持即跳过 |
 | 配置校验 | `aiop/config.py`、`aiop/cli.py` | 非法布尔/日志级别/未知键 → `ConfigError`，CLI 退出码 2 |
+| 双基准检索 | `aiop/references.py`、`orchestrator.py`、`generation/llm.py` | CUDA + Ascend 参考注入设计/LLM/draft；`references.json`、`reference_context.md` |
+| 参考精度与性能门禁 | `aiop/simulation/testgen.py` | `REFERENCE_AIOP`（fp32 1e-5 / dtype floor）、`PERF_TARGET_AIOP`、`verification` |
+| 仓库集成 | `aiop/checks/integration.py`、`aiop/cli.py` | `integration.json`、`aiop integrate --apply` |
 
 ## 12. 知识库与多代理
 
@@ -953,7 +1012,7 @@ Skill：[.agent/skills/aiop-op-pipeline/SKILL.md](.agent/skills/aiop-op-pipeline
 ## 13. 测试与基准
 
 ```bash
-python -m pytest -q              # 144 个测试（静态/规划/manifest/open/draft/契约/搜索/审计/进度/HTTP/导出/执行开关/指令日志/端到端）
+python -m pytest -q              # 154 个测试（静态/规划/manifest/open/draft/契约/搜索/审计/进度/HTTP/导出/执行开关/指令日志/双基准/集成/端到端）
 python -m pytest -q -m slow      # 仅端到端（会调用 bisheng）
 
 python -m aiop eval --cases aiop/eval/cases.yaml --no-simulate \
@@ -1026,6 +1085,7 @@ python -m aiop campaign --op GemmFwdOp --workload 1 --dtype-case 0 --out reports
 | `v0.1.0+draft`（工作区，未提交） | — | `prompt` 命令、`--strategy draft`/`--draft`、`FIX_REQUEST.md`、`golden_draft.py`、知识库 11 |
 | `v0.1.0+campaign`（工作区，未提交） | — | TaskContract、SkillRegistry、有界计划搜索、LoweringAudit、EvidenceStore/Diagnoser、多场景仿真 + 负例门禁、`campaign` 命令、统一 `run.log` 与终端进度、HTTP `/v1/commands` + `/v1/jobs`、`export` 单文件测试；测试 71 → 90 |
 | `v0.1.0+exec`（工作区，未提交） | — | 全量指令日志 `commands.log`（执行前记录完整 argv/上下文）、`steps.compile/simulate/npu/profile` 独立开关（配置 + CLI + 环境变量）、非法配置校验、按需执行与环境不支持自动跳过；LLM 失败根因回显；测试 124 → 144 |
+| `v0.1.0+dual-ref`（工作区，未提交） | — | 双基准检索（CUDA 同层 + 已验证 Ascend A5）注入设计/LLM/draft；1e-5 参考精度门禁（fp32 strict / 低精度 dtype floor）；性能目标验证；`integration.json` 集成校验与 `aiop integrate`；测试 144 → 154 |
 
 > `pyproject.toml` 当前版本号仍为 `0.1.0`；上表用提交批次标记功能适用版本，便于对应代码状态。
 

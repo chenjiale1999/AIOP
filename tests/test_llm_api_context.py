@@ -169,7 +169,7 @@ def build():
     monkeypatch.setattr(
         LLMClient,
         "generate_kernel",
-        lambda self, spec_dump, design, knowledge, open_mode=False: bad,
+        lambda self, spec_dump, design, knowledge, open_mode=False, reference_context="": bad,
     )
     spec = TaskSpec(
         "row_reduce",
@@ -214,12 +214,12 @@ def build():
     monkeypatch.setattr(
         LLMClient,
         "generate_kernel",
-        lambda self, spec_dump, design, knowledge, open_mode=False: bad,
+        lambda self, spec_dump, design, knowledge, open_mode=False, reference_context="": bad,
     )
     monkeypatch.setattr(
         LLMClient,
         "repair_kernel",
-        lambda self, source, error, design, knowledge="": bad,
+        lambda self, source, error, design, knowledge="", reference_context="": bad,
     )
     spec = TaskSpec(
         "softmax_fallback",

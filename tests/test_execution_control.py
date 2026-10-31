@@ -65,6 +65,9 @@ def test_unknown_step_option_is_rejected(tmp_path):
     path = _cfg_file(tmp_path, "logging:\n  echo: true\n")
     with pytest.raises(ConfigError, match="unknown logging option"):
         load_config(path)
+    path = _cfg_file(tmp_path, "references:\n  require_cdua: true\n")
+    with pytest.raises(ConfigError, match="unknown references option"):
+        load_config(path)
 
 
 def test_invalid_env_switch_is_rejected(tmp_path, monkeypatch):

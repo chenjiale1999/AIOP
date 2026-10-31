@@ -385,6 +385,13 @@ DRAFT_RULES = """\
 - 只声明**一个**输出张量（SPEC 的 `outputs[0]`）；多输出算子请在 kernel 内只写主输出。
 - 元数据输入（`role=metadata`，int32/int64）已由调用方填好合法索引，kernel 只读不校验。
 
+## TileOPs 集成（真实 manifest 算子为硬门禁）
+- 除 `def build()` 外，模块还必须定义 `class Ascend<Stem>Kernel(Kernel, <Family>Interface)`，
+  结构、命名、注释、注册方式严格对齐下方 Ascend 基准实现。
+- 必须调用 `register_kernel_type("<Op>", "ascend", Ascend<Stem>Kernel)`；目标路径见
+  `references.json` 的 `target_path`（`aiop integrate --apply` 可安装并跑上游测试）。
+- 输出与 CUDA 语义基准的 fp32 绝对误差 ≤ 1e-5；fp16/bf16 不低于 dtype 分辨率下限。
+
 ## 交付方式
 把代码写到本目录的 `draft.py`，然后执行：
 
@@ -398,6 +405,7 @@ def build_draft_prompt(
     spec: TaskSpec,
     design_md: str,
     knowledge_hits: list[dict[str, Any]],
+    reference_context: str = "",
 ) -> str:
     """Prompt handed to an external agent (Trae) that plays the LLM role."""
     manifest = spec.manifest or {}
@@ -427,6 +435,8 @@ def build_draft_prompt(
 ## 知识库召回
 
 {hits}
+
+{reference_context}
 """
 
 

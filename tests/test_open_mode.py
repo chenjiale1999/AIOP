@@ -73,7 +73,9 @@ def fake_llm(monkeypatch):
     monkeypatch.setattr(LLMClient, "available", property(lambda self: True))
     calls = {"kernel": 0, "golden": 0, "repair": 0}
 
-    def generate_kernel(self, spec_dump, design, knowledge, open_mode=False):
+    def generate_kernel(
+        self, spec_dump, design, knowledge, open_mode=False, reference_context=""
+    ):
         calls["kernel"] += 1
         return GOOD_KERNEL
 
@@ -81,7 +83,7 @@ def fake_llm(monkeypatch):
         calls["golden"] += 1
         return GOOD_GOLDEN
 
-    def repair_kernel(self, source, error, design, knowledge=""):
+    def repair_kernel(self, source, error, design, knowledge="", reference_context=""):
         calls["repair"] += 1
         return GOOD_KERNEL
 
@@ -139,11 +141,11 @@ def test_compile_failure_is_repaired_by_the_llm(tmp_path, monkeypatch):
     monkeypatch.setattr(
         LLMClient,
         "generate_kernel",
-        lambda self, s, d, k, open_mode=False: BROKEN_KERNEL,
+        lambda self, s, d, k, open_mode=False, reference_context="": BROKEN_KERNEL,
     )
     repaired = {"n": 0}
 
-    def repair_kernel(self, source, error, design, knowledge=""):
+    def repair_kernel(self, source, error, design, knowledge="", reference_context=""):
         repaired["n"] += 1
         return GOOD_KERNEL
 

@@ -28,10 +28,14 @@ tools:
 ## 必须先做
 
 1. 读 `DESIGN.md`：编程模式、API 映射、tiling、容量预算、尾部策略、精度标准。
-2. 读 `result.json` 的 `plan` 与 `static`/`compile` 失败摘要。
-3. 优先复用已验证模板（`aiop/generation/templates.py` 与 `examples/ascend/`），
-   不从头手写。
-4. 生成后立即跑：
+2. 读 `reference_context.md` 与 `references.json`：CUDA 对等实现决定语义/IO/计算顺序，
+   `kernels/ascend/` 已验证实现决定结构/命名/注释/注册；禁止脱离两份基准臆造 API。
+3. 读 `result.json` 的 `plan` 与 `static`/`compile` 失败摘要。
+4. 优先复用已验证模板（`aiop/generation/templates.py` 与 `examples/ascend/`），
+   不从头手写。真实 manifest 算子还须提供 `class Ascend<Stem>Kernel` 与
+   `register_kernel_type("<Op>", "ascend", <class>)`，并用
+   `python -m aiop integrate <task>` 校验集成就绪。
+5. 生成后立即跑：
    ```bash
    python -m aiop check   workspace/<task>
    python -m aiop compile workspace/<task>

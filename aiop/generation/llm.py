@@ -50,7 +50,18 @@ Rules:
 {reducer}
 
 Any T.<op> or T.simd.<op> outside the allowlist is rejected by the static gate
-(API001/API003/API004). Return only the module code, no markdown fences."""
+(API001/API003/API004).
+
+When DUAL REFERENCE BASELINES are supplied:
+- The CUDA peer defines semantics, I/O names/shapes/dtypes, compute order and precision.
+- The Ascend peer defines structure, naming, comments and hardware adaptation.
+- Keep a top-level `def build()` returning the @T.prim_func (aiop gates need it).
+- Also define `class Ascend<Stem>Kernel(Kernel, <Family>Interface)` and call
+  `register_kernel_type("<Op>", "ascend", Ascend<Stem>Kernel)` so the module can be
+  installed into TileOPs.
+- fp32 output must match the reference within 1e-5 absolute; fp16/bf16 at dtype resolution.
+
+Return only the module code, no markdown fences."""
 
 
 def _allowlist_text(cfg: Config) -> str:
@@ -127,6 +138,7 @@ class LLMClient:
         knowledge: str,
         *,
         open_mode: bool = False,
+        reference_context: str = "",
     ) -> str:
         extra = ""
         if open_mode:
@@ -143,6 +155,7 @@ class LLMClient:
             f"DESIGN:\n{design}\n\n"
             f"KNOWLEDGE:\n{knowledge}\n"
             f"{extra}\n"
+            f"{reference_context}\n"
             f"{REDUCER_CONTRACT}\n"
             "Output only the Python module."
         )
@@ -170,12 +183,20 @@ class LLMClient:
         body = _strip_fences(self.complete(prompt))
         return _normalize_body(body)
 
-    def repair_kernel(self, source: str, error: str, design: str, knowledge: str = "") -> str:
+    def repair_kernel(
+        self,
+        source: str,
+        error: str,
+        design: str,
+        knowledge: str = "",
+        reference_context: str = "",
+    ) -> str:
         prompt = (
             "The following generated kernel failed validation. Fix the root cause, keep the design.\n"
             "Do not invent API names: use only the allowlist in the system message.\n\n"
             f"DESIGN:\n{design}\n\n"
             f"KNOWLEDGE:\n{knowledge}\n\n"
+            f"{reference_context}\n"
             f"{REDUCER_CONTRACT}\n"
             f"ERROR:\n{error[-6000:]}\n\nSOURCE:\n{source[-12000:]}\n\n"
             "Output only the full corrected Python module."

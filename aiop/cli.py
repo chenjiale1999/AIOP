@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -12,7 +14,14 @@ from .agent.design import build_design, build_draft_prompt, build_open_design
 from .agent.orchestrator import OperatorAgent, task_id_for
 from .board.runner import run_board
 from .checks.compiler import CompileResult, compile_kernel
+from .checks.integration import check_integration, write_integration
 from .checks.static import run_static
+from .references import (
+    find_reference_pair,
+    render_reference_context,
+    write_reference_context,
+    write_references,
+)
 from .config import ConfigError, apply_steps, load_config
 from .knowledge.index import default_index
 from .manifest import bind_operator, describe_operator, list_operators
@@ -213,6 +222,10 @@ def cmd_export(args) -> int:
         golden_override=golden_override,
         kernel_source=kernel_text,
         variants=variants,
+        reference_atol=(
+            cfg.references.parity_atol if cfg.references.enforce_parity else 0.0
+        ),
+        enforce_reference=cfg.references.enforce_parity,
     )
     available = sum(1 for variant in variants if variant.available)
     unique = len({input_key(variant.spec) for variant in variants})
@@ -229,6 +242,64 @@ def cmd_export(args) -> int:
     print(f"run:  python {test.name} --device npu")
     print(f"copy: scp {test} <user>@<a5-host>:/tmp/")
     return 0
+
+
+def cmd_integrate(args) -> int:
+    """Validate (and optionally install) a generated kernel into TileOPs."""
+    cfg = load_config(args.config or None)
+    task_dir, spec, plan = _load_task(args.task)
+    kernel = task_dir / f"{spec.name}.py"
+    pair = find_reference_pair(spec, cfg, repo_root=args.repo or None)
+    if not pair.repo:
+        print(
+            "reference repository not found; pass --repo or set AIOP_TILEOPS_REPO",
+            file=sys.stderr,
+        )
+        return 1
+    report = check_integration(spec, kernel, pair, cfg)
+    path = write_integration(task_dir, report)
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
+        print(f"report: {path}", file=sys.stderr)
+    else:
+        print(f"op:     {report.op}")
+        print(f"source: {kernel}")
+        print(f"target: {report.target_path}")
+        print(f"class:  {report.class_name}")
+        print(f"ready:  {report.ready}")
+        for check in report.checks:
+            print(f"  [{check.status}] {check.rule}: {check.message}")
+        for fix in report.fixes:
+            print(f"  fix: {fix}")
+        print(f"report: {path}")
+    if not args.apply:
+        return 0 if report.ready else 1
+    if not report.ready:
+        print("integration is not ready; fix the errors above first", file=sys.stderr)
+        return 1
+    target = Path(report.target_path)
+    if target.exists() and not args.force:
+        print(f"target exists: {target}; pass --force to overwrite", file=sys.stderr)
+        return 1
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(kernel, target)
+    print(f"installed: {target}")
+    if not args.run_tests:
+        return 0
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/ops", "-k", spec.name, "-q"],
+        cwd=pair.repo,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=1800,
+    )
+    tail = "\n".join((proc.stdout or "").strip().splitlines()[-20:])
+    print(tail)
+    if proc.returncode == 5:
+        print("warning: no upstream test matched; add one before release", file=sys.stderr)
+        return 0
+    return 0 if proc.returncode == 0 else 1
 
 
 def cmd_check(args) -> int:
@@ -368,7 +439,15 @@ def cmd_prompt(args) -> int:
     task_dir.mkdir(parents=True, exist_ok=True)
     spec.save(task_dir / "spec.yaml")
     (task_dir / "DESIGN.md").write_text(design, encoding="utf-8")
-    prompt = build_draft_prompt(spec, design, hits)
+    reference_context = ""
+    if cfg.references.enabled:
+        pair = find_reference_pair(spec, cfg)
+        reference_context = render_reference_context(pair, cfg.references.max_chars)
+        if pair.repo:
+            write_references(task_dir, pair)
+        if reference_context:
+            write_reference_context(task_dir, reference_context)
+    prompt = build_draft_prompt(spec, design, hits, reference_context)
     path = task_dir / "PROMPT.md"
     path.write_text(prompt, encoding="utf-8")
     print(f"task:   {task_dir}")
@@ -559,6 +638,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("task", help="task id or workspace/<task>")
     p.add_argument("--out", default="", help="output directory (default <task>/export)")
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser(
+        "integrate",
+        help="validate (and optionally install) a generated kernel into TileOPs",
+    )
+    p.add_argument("task")
+    p.add_argument("--repo", default="", help="TileOPs checkout (default: autodetect)")
+    p.add_argument("--apply", action="store_true", help="copy the kernel to its target path")
+    p.add_argument("--force", action="store_true", help="overwrite an existing target file")
+    p.add_argument(
+        "--run-tests",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="run the upstream tests for the op after --apply",
+    )
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_integrate)
 
     p = sub.add_parser("check", help="static checks for an existing task")
     p.add_argument("task")

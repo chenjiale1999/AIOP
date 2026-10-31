@@ -33,6 +33,7 @@ def generate(
     strategy: str = "auto",
     open_mode: bool = False,
     draft_path: str | Path | None = None,
+    reference_context: str = "",
 ) -> tuple[Path, str]:
     """Return (kernel_path, generator_name).
 
@@ -74,7 +75,11 @@ def generate(
         if client.available:
             try:
                 source = client.generate_kernel(
-                    spec.to_dict(), design, knowledge, open_mode=open_mode
+                    spec.to_dict(),
+                    design,
+                    knowledge,
+                    open_mode=open_mode,
+                    reference_context=reference_context,
                 )
                 source = _normalize_llm_source(source, directory)
                 ast.parse(source)
@@ -119,13 +124,18 @@ def repair(
     *,
     design: str = "",
     knowledge: str = "",
+    reference_context: str = "",
 ) -> tuple[Path, str]:
     if cfg.agent.llm.enabled:
         client = LLMClient(cfg)
         if client.available:
             try:
                 source = client.repair_kernel(
-                    kernel_path.read_text(encoding="utf-8"), error, design, knowledge
+                    kernel_path.read_text(encoding="utf-8"),
+                    error,
+                    design,
+                    knowledge,
+                    reference_context,
                 )
                 source = _normalize_llm_source(source, kernel_path.parent)
                 ast.parse(source)

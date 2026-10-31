@@ -42,6 +42,19 @@ logging:
   # Echo full command lines to stderr in addition to commands.log
   echo_commands: false
 
+# Dual-baseline alignment: CUDA peer for semantics, verified Ascend A5 kernel
+# for structure/hardware adaptation. Leave tileops_repo empty to autodetect
+# ref_reops/TileOPs, a sibling checkout or AIOP_TILEOPS_REPO.
+references:
+  tileops_repo: ""
+  enabled: true
+  require_cuda: true          # manifest ops must have a CUDA peer
+  require_ascend: true        # at least a verified A5 style baseline
+  max_chars: 40000            # per-reference prompt budget (full file path still recorded)
+  parity_atol: 1.0e-05        # fp32 parity gate against the CUDA semantics
+  enforce_parity: true
+  integration_required: true  # open/LLM kernels must be TileOPs-registrable
+
 board:
   host: ""
   port: 22

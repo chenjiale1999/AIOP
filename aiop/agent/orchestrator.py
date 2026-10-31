@@ -17,6 +17,7 @@ from typing import Any
 
 from ..board.runner import run_board
 from ..checks.compiler import CompileResult, compile_kernel, compile_support
+from ..checks.integration import IntegrationReport, check_integration, write_integration
 from ..checks.static import Report as StaticReport
 from ..checks.static import run_static
 from ..config import Config, load_config
@@ -24,6 +25,15 @@ from ..generation.generator import generate, repair
 from ..generation.llm import LLMClient
 from ..generation.templates import TEMPLATE_NAME
 from ..knowledge.index import KnowledgeIndex, default_index
+from ..references import (
+    ReferencePair,
+    find_reference_pair,
+    manifest_has_op,
+    reference_summary,
+    render_reference_context,
+    write_reference_context,
+    write_references,
+)
 from ..runtime.command_log import CommandLogger, logger_for
 from ..runtime.hardware import Plan, build_open_plan, build_plan, roofline
 from ..simulation.runner import SimResult, run_simulation, select_backend
@@ -140,6 +150,80 @@ class OperatorAgent:
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(text.rstrip() + "\n\n")
 
+    # ----------------------------------------------------------- references
+    def _requires_repo_contract(self, spec: TaskSpec) -> bool:
+        """Only operators declared by the reference manifest carry these rules."""
+        return bool(
+            self.cfg.references.enabled
+            and spec.manifest
+            and self.cfg.paths.tileops_manifest
+            and manifest_has_op(self.cfg.paths.tileops_manifest, spec.name)
+        )
+
+    def _reference_blockers(self, spec: TaskSpec, pair: ReferencePair) -> list[str]:
+        """Manifest operators must have both baselines before generation starts."""
+        if not pair.repo or not self._requires_repo_contract(spec):
+            return []
+        reasons: list[str] = []
+        if self.cfg.references.require_cuda and pair.cuda is None:
+            reasons.append(
+                f"no CUDA reference kernel for {spec.name!r} (stem {pair.stem!r}) "
+                f"under {pair.repo}"
+            )
+        if self.cfg.references.require_ascend and pair.ascend is None:
+            reasons.append(
+                f"no verified Ascend A5 kernel usable as a baseline under {pair.repo}"
+            )
+        return reasons
+
+    def _apply_integration_gate(
+        self,
+        spec: TaskSpec,
+        kernel_path: Path,
+        pair: ReferencePair,
+        static_report: StaticReport,
+        *,
+        mode: str,
+        task_dir: Path,
+        artifacts: dict[str, str],
+        evidence: EvidenceStore,
+        reporter: ProgressReporter,
+    ) -> IntegrationReport | None:
+        """Record TileOPs integration readiness; block open-mode kernels that fail."""
+        if not self.cfg.references.integration_required:
+            return None
+        report = check_integration(spec, kernel_path, pair, self.cfg)
+        artifacts["integration"] = str(write_integration(task_dir, report))
+        enforce = (
+            mode == "open"
+            and bool(pair.repo)
+            and self._requires_repo_contract(spec)
+        )
+        status = "passed" if report.ready else ("failed" if enforce else "warning")
+        reporter.emit(
+            "integration",
+            status,
+            ready=report.ready,
+            target=report.target_path or "unresolved",
+        )
+        evidence.record(
+            "integration",
+            "tileops_integration",
+            status,
+            category="integration" if enforce and not report.ready else "none",
+            facts={
+                "ready": report.ready,
+                "class": report.class_name,
+                "target": report.target_path,
+                "fixes": report.fixes,
+            },
+            artifacts=[artifacts["integration"]],
+        )
+        if enforce and not report.ready:
+            for check in report.errors:
+                static_report.error(check.rule, check.message)
+        return report
+
     # -------------------------------------------------------------------- run
     def run(
         self,
@@ -214,6 +298,43 @@ class OperatorAgent:
                 reason="board_not_requested" if board_requested is False else "board_host_unset",
             )
 
+        # Stage 0b: dual reference baselines (CUDA peer + verified Ascend A5 peer).
+        reference_pair = ReferencePair(op=spec.name, stem=spec.name, repo="")
+        reference_context = ""
+        reference_paths: dict[str, str] = {}
+        if self.cfg.references.enabled:
+            reference_pair = find_reference_pair(spec, self.cfg)
+            reference_context = render_reference_context(
+                reference_pair, self.cfg.references.max_chars
+            )
+            if reference_pair.repo:
+                reference_paths["references"] = str(
+                    write_references(task_dir, reference_pair)
+                )
+            if reference_context:
+                reference_paths["reference_context"] = str(
+                    write_reference_context(task_dir, reference_context)
+                )
+            reasons = self._reference_blockers(spec, reference_pair)
+            if reasons:
+                return self._run_blocked_reference(
+                    spec,
+                    reasons,
+                    task_id=task_id,
+                    task_dir=task_dir,
+                    state=state,
+                    started=started,
+                    reporter=reporter,
+                    reference_pair=reference_pair,
+                )
+            reporter.emit(
+                "reference",
+                "resolved",
+                cuda=reference_pair.cuda.rel_path if reference_pair.cuda else "missing",
+                ascend=reference_pair.ascend.rel_path if reference_pair.ascend else "missing",
+                exact=reference_pair.ascend_exact,
+            )
+
         knowledge_hits = self.kb.search(
             f"{spec.family} {spec.name} tiling 内存 精度 性能", k=5
         )
@@ -278,6 +399,9 @@ class OperatorAgent:
                 (task_dir / "golden_ref.py").write_text(
                     "def golden_body():\n" + golden_override + "\n", encoding="utf-8"
                 )
+        summary = reference_summary(reference_pair)
+        if summary:
+            design = design.rstrip() + "\n\n" + summary
         reporter.emit(
             "design",
             "done",
@@ -293,6 +417,7 @@ class OperatorAgent:
             "design": str(task_dir / "DESIGN.md"),
             "spec": str(task_dir / "spec.yaml"),
             "run_log": str(reporter.path),
+            **reference_paths,
         }
 
         # Stage 1b: freeze the task contract and the skill bundle it relies on.
@@ -404,6 +529,7 @@ class OperatorAgent:
                 reporter.emit("search", "failed", error=f"{type(exc).__name__}: {exc}")
 
         static_report: StaticReport | None = None
+        integration_report: IntegrationReport | None = None
         compile_result: CompileResult | None = None
         kernel_path = task_dir / f"{spec.name}.py"
         test_path = task_dir / f"test_{spec.name}.py"
@@ -434,6 +560,7 @@ class OperatorAgent:
                         self.cfg,
                         design=design,
                         knowledge=knowledge_context,
+                        reference_context=reference_context,
                     )
                 else:
                     kernel_path, generator_name = generate(
@@ -446,6 +573,7 @@ class OperatorAgent:
                         strategy=strategy,
                         open_mode=mode == "open",
                         draft_path=draft,
+                        reference_context=reference_context,
                     )
             except Exception as exc:  # noqa: BLE001 - generator bugs become task failures
                 error = f"{type(exc).__name__}: {exc}"
@@ -492,8 +620,25 @@ class OperatorAgent:
                     tilelang_repo=self.cfg.paths.tilelang_repo,
                     golden_override=golden_override,
                     enumerate_variants=(mode == "template"),
+                    reference_atol=(
+                        self.cfg.references.parity_atol
+                        if self.cfg.references.enforce_parity
+                        else 0.0
+                    ),
+                    enforce_reference=self.cfg.references.enforce_parity,
                 )
             static_report = run_static(spec, current_plan, kernel_path, self.cfg)
+            integration_report = self._apply_integration_gate(
+                spec,
+                kernel_path,
+                reference_pair,
+                static_report,
+                mode=mode,
+                task_dir=task_dir,
+                artifacts=artifacts,
+                evidence=evidence,
+                reporter=reporter,
+            )
             (task_dir / "static_report.json").write_text(
                 json.dumps(static_report.to_dict(), indent=2), encoding="utf-8"
             )
@@ -658,8 +803,20 @@ class OperatorAgent:
                 design=design,
                 knowledge=knowledge_context,
                 strategy="template",
+                reference_context=reference_context,
             )
             static_report = run_static(spec, current_plan, kernel_path, self.cfg)
+            integration_report = self._apply_integration_gate(
+                spec,
+                kernel_path,
+                reference_pair,
+                static_report,
+                mode=mode,
+                task_dir=task_dir,
+                artifacts=artifacts,
+                evidence=evidence,
+                reporter=reporter,
+            )
             (task_dir / "static_report.json").write_text(
                 json.dumps(static_report.to_dict(), indent=2), encoding="utf-8"
             )
@@ -822,6 +979,7 @@ class OperatorAgent:
                         strategy=strategy,
                         open_mode=mode == "open",
                         draft_path=draft,
+                        reference_context=reference_context,
                     )
                 except Exception as exc:  # noqa: BLE001
                     self._write_debug(
@@ -841,8 +999,25 @@ class OperatorAgent:
                     tilelang_repo=self.cfg.paths.tilelang_repo,
                     golden_override=golden_override,
                     enumerate_variants=(mode == "template"),
+                    reference_atol=(
+                        self.cfg.references.parity_atol
+                        if self.cfg.references.enforce_parity
+                        else 0.0
+                    ),
+                    enforce_reference=self.cfg.references.enforce_parity,
                 )
                 static_report = run_static(spec, current_plan, kernel_path, self.cfg)
+                integration_report = self._apply_integration_gate(
+                    spec,
+                    kernel_path,
+                    reference_pair,
+                    static_report,
+                    mode=mode,
+                    task_dir=task_dir,
+                    artifacts=artifacts,
+                    evidence=evidence,
+                    reporter=reporter,
+                )
                 if compile_enabled and compile_supported:
                     reporter.emit("compile", "start", phase="simulate_retry")
                     compile_result = compile_kernel(
@@ -995,7 +1170,13 @@ class OperatorAgent:
             else:
                 status = "blocked_compile"
         elif sim_result and sim_result.status == "failed":
-            status = "blocked_accuracy"
+            kind = str((sim_result.result or {}).get("failure_kind", ""))
+            if kind == "performance":
+                status = "blocked_performance"
+            elif kind == "reference_parity":
+                status = "blocked_parity"
+            else:
+                status = "blocked_accuracy"
         elif board_result and board_result.status in ("failed", "blocked"):
             status = "blocked_board"
         elif sim_result and sim_result.passed:
@@ -1047,6 +1228,9 @@ class OperatorAgent:
             "compile": compile_result.to_dict() if compile_result else None,
             "simulation": sim_result.to_dict() if sim_result else None,
             "board": board_result.to_dict() if board_result else None,
+            "references": reference_pair.to_dict() if reference_pair.repo else None,
+            "integration": integration_report.to_dict() if integration_report else None,
+            "verification": self._verification_summary(sim_result, integration_report),
             "steps": dict(self.cfg.steps.__dict__),
             "command_log": str(command_log.path),
             "attempts": attempts,
@@ -1054,7 +1238,15 @@ class OperatorAgent:
             "artifacts": artifacts,
             "environment": self._env_snapshot(),
             "elapsed_s": round(time.time() - started, 2),
-            "notes": self._notes(sim_result, board_result, compile_result, mode, golden_source),
+            "notes": self._notes(
+                sim_result,
+                board_result,
+                compile_result,
+                mode,
+                golden_source,
+                reference_pair,
+                integration_report,
+            ),
         }
         (task_dir / "result.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
         (task_dir / "report.md").write_text(self._report_markdown(result), encoding="utf-8")
@@ -1083,6 +1275,98 @@ class OperatorAgent:
             verified=verified,
             report=str(task_dir / "report.md"),
             elapsed_s=round(time.time() - started, 2),
+        )
+        return result
+
+    def _run_blocked_reference(
+        self,
+        spec: TaskSpec,
+        reasons: list[str],
+        *,
+        task_id: str,
+        task_dir: Path,
+        state: TaskState,
+        started: float,
+        reporter: ProgressReporter,
+        reference_pair: ReferencePair,
+    ) -> dict[str, Any]:
+        """Terminal state: neither baseline is available, so nothing is generated."""
+        reporter.emit("design", "blocked", reasons="; ".join(reasons)[:300])
+        design = build_blocked_design(spec, reasons, [])
+        (task_dir / "DESIGN.md").write_text(design, encoding="utf-8")
+        state.stages["design"] = "blocked_reference"
+        state.status = "blocked_reference"
+        notes = [
+            "Dual-baseline alignment failed before any kernel was generated: the agent "
+            "refuses to write an Ascend A5 operator without a CUDA semantic peer and a "
+            "verified Ascend A5 structural baseline.",
+            *[f"reference: {reason}" for reason in reasons],
+            "Point AIOP_TILEOPS_REPO at a TileOPs checkout that contains both "
+            "kernels/<family>/ and kernels/ascend/, or relax "
+            "references.require_cuda / references.require_ascend.",
+        ]
+        references_path = write_references(task_dir, reference_pair)
+        artifacts = {
+            "design": str(task_dir / "DESIGN.md"),
+            "spec": str(task_dir / "spec.yaml"),
+            "run_log": str(reporter.path),
+            "references": str(references_path),
+        }
+        result: dict[str, Any] = {
+            "task_id": task_id,
+            "status": "blocked_reference",
+            "verified": False,
+            "mode": "blocked",
+            "golden_source": "none",
+            "self_referenced": False,
+            "simulation_requested": False,
+            "generator": "none",
+            "spec": spec.to_dict(),
+            "plan": None,
+            "roofline": roofline(spec),
+            "contract": None,
+            "skills": None,
+            "lowering_audit": None,
+            "diagnosis": None,
+            "static": None,
+            "compile": None,
+            "simulation": None,
+            "board": None,
+            "attempts": [],
+            "reference_reasons": reasons,
+            "references": reference_pair.to_dict(),
+            "knowledge": [],
+            "environment": self._env_snapshot(),
+            "elapsed_s": round(time.time() - started, 2),
+            "notes": notes,
+            "artifacts": artifacts,
+        }
+        state.artifacts = artifacts
+        state.save(task_dir / "state.json")
+        (task_dir / "result.json").write_text(
+            json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        (task_dir / "report.md").write_text(self._report_markdown(result), encoding="utf-8")
+        (task_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "task_id": task_id,
+                    "spec": spec.to_dict(),
+                    "plan": None,
+                    "generator": "none",
+                    "reference_reasons": reasons,
+                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        reporter.emit(
+            "done",
+            "blocked",
+            status="blocked_reference",
+            report=str(task_dir / "report.md"),
+            elapsed_s=result["elapsed_s"],
         )
         return result
 
@@ -1285,6 +1569,32 @@ class OperatorAgent:
         except Exception as exc:  # noqa: BLE001
             return {"error": str(exc)}
 
+    def _verification_summary(
+        self,
+        sim: SimResult | None,
+        integration: IntegrationReport | None,
+    ) -> dict[str, Any]:
+        """Functional / precision / reference / performance / integration verdicts."""
+        payload = (sim.result or {}) if sim else {}
+        checks = dict(payload.get("verification") or {})
+        if not checks:
+            checks["functional"] = {
+                "passed": bool(sim and sim.passed),
+                "status": sim.status if sim else "not_run",
+            }
+        checks["reference_baselines"] = {
+            "enabled": self.cfg.references.enabled,
+            "parity_atol": self.cfg.references.parity_atol,
+            "enforced": self.cfg.references.enforce_parity,
+        }
+        checks["integration"] = {
+            "required": bool(self.cfg.references.integration_required),
+            "ready": bool(integration and integration.ready),
+            "target": integration.target_path if integration else "",
+            "fixes": list(integration.fixes) if integration else [],
+        }
+        return checks
+
     def _notes(
         self,
         sim: SimResult | None,
@@ -1292,8 +1602,21 @@ class OperatorAgent:
         compile_result: CompileResult | None,
         mode: str = "template",
         golden_source: str = "aiop-builtin",
+        references: ReferencePair | None = None,
+        integration: IntegrationReport | None = None,
     ) -> list[str]:
         notes: list[str] = []
+        if references is not None and references.repo:
+            cuda = references.cuda.rel_path if references.cuda else "missing"
+            ascend = references.ascend.rel_path if references.ascend else "missing"
+            notes.append(
+                f"dual baselines: cuda={cuda}; ascend={ascend}"
+                + ("" if references.ascend_exact else " (style baseline)")
+            )
+        if integration is not None and not integration.ready:
+            notes.append(
+                "TileOPs integration is not ready: " + "; ".join(integration.fixes[:3] or ["see integration.json"])
+            )
         if not self.cfg.steps.compile:
             notes.append("compile stage disabled by configuration (steps.compile=false).")
         elif compile_result and compile_result.category == "skipped":
@@ -1418,6 +1741,30 @@ class OperatorAgent:
             f"- metrics: `{json.dumps(board.get('result', {}))[:1500]}`",
             "",
         ]
+        references = result.get("references") or {}
+        verification = result.get("verification") or {}
+        if references:
+            lines += [
+                "## 双基准实现",
+                "",
+                f"- repo: `{references.get('repo', '')}`",
+                f"- CUDA peer: `{(references.get('cuda') or {}).get('rel_path', 'missing')}`",
+                f"- Ascend peer: `{(references.get('ascend') or {}).get('rel_path', 'missing')}`",
+                f"- target: `{references.get('target_path', '')}`",
+                "",
+            ]
+        if verification:
+            integration = verification.get("integration") or {}
+            lines += [
+                "## 自动验证",
+                "",
+                f"- functional: `{json.dumps(verification.get('functional', {}), ensure_ascii=False)}`",
+                f"- precision: `{json.dumps(verification.get('precision', {}), ensure_ascii=False)}`",
+                f"- reference: `{json.dumps(verification.get('reference', {}), ensure_ascii=False)}`",
+                f"- performance: `{json.dumps(verification.get('performance', {}), ensure_ascii=False)}`",
+                f"- integration: ready=`{integration.get('ready')}` target=`{integration.get('target', '')}`",
+                "",
+            ]
         diagnosis = result.get("diagnosis") or {}
         if diagnosis:
             lines += ["## 诊断（失败聚类）", "", f"- verdict: `{diagnosis.get('verdict')}`"]
