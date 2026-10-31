@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import PROJECT_ROOT, Config
+from ..runtime.command_log import CommandLogger
 from .static import source_audit
 
 
@@ -55,7 +57,25 @@ def classify(error: str) -> tuple[str, str]:
     return "compile_error", "inspect the compiler traceback"
 
 
-def compile_kernel(module_path: Path, workdir: Path, cfg: Config, timeout: int | None = None) -> CompileResult:
+def compile_support(cfg: Config) -> tuple[bool, str]:
+    """Return whether the host can run the device-compile step at all."""
+    if not cfg.cann.home:
+        return False, "CANN home not found"
+    bisheng = Path(cfg.cann.home) / "bin" / "bisheng"
+    if not bisheng.is_file():
+        return False, f"bisheng not found at {bisheng}"
+    if not cfg.paths.tilelang_repo and importlib.util.find_spec("tilelang") is None:
+        return False, "no tilelang checkout or installed A5 tilelang package"
+    return True, ""
+
+
+def compile_kernel(
+    module_path: Path,
+    workdir: Path,
+    cfg: Config,
+    timeout: int | None = None,
+    command_log: CommandLogger | None = None,
+) -> CompileResult:
     import time
 
     started = time.time()
@@ -82,6 +102,23 @@ def compile_kernel(module_path: Path, workdir: Path, cfg: Config, timeout: int |
         "--out",
         str(out_json),
     ]
+    if command_log is not None:
+        command_log.log(
+            "compile",
+            cmd,
+            timeout_s=timeout or cfg.compile.timeout_s,
+            context={
+                "task_dir": str(workdir),
+                "module": str(module_path),
+                "result": str(out_json),
+                "tilelang_repo": repo,
+                "cann_home": cfg.cann.home,
+                "pythonpath": env["PYTHONPATH"],
+                "ascend_home_path": env.get("ASCEND_HOME_PATH", ""),
+                "device_flags": list(cfg.compile.device_flags),
+                "target": cfg.compile.target,
+            },
+        )
     try:
         proc = subprocess.run(
             cmd,

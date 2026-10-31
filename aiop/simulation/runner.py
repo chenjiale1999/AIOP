@@ -14,6 +14,7 @@ from typing import Any
 
 from ..config import PROJECT_ROOT, Config
 from ..runtime import tilelang_a5
+from ..runtime.command_log import CommandLogger
 from ..runtime.hardware import roofline
 from ..specs import TaskSpec
 
@@ -47,27 +48,49 @@ def _runtime_site() -> str:
     return str(site) if site.is_dir() else ""
 
 
-def select_backend(cfg: Config) -> tuple[str, list[str]]:
+def select_backend(
+    cfg: Config, command_log: CommandLogger | None = None
+) -> tuple[str, list[str]]:
+    """Pick a usable backend; unavailable ones are skipped, never forced."""
     notes: list[str] = []
-    if cfg.simulation.backend in ("static", "npusim", "local_npu"):
-        return cfg.simulation.backend, notes
-    try:
-        import torch  # noqa: F401
-        import torch_npu  # noqa: F401
+    requested = cfg.simulation.backend
+    if requested not in ("auto", "npusim", "local_npu", "static"):
+        notes.append(f"unknown simulation.backend={requested!r}; using auto")
+        requested = "auto"
+    if requested == "static":
+        return "static", notes
+    if requested in ("auto", "local_npu"):
+        try:
+            import torch  # noqa: F401
+            import torch_npu  # noqa: F401
 
-        if torch.npu.is_available():
-            return "local_npu", notes
-        notes.append("torch_npu imported but no NPU device is visible")
-    except Exception as exc:  # noqa: BLE001 - probe
-        notes.append(f"torch_npu unavailable: {type(exc).__name__}")
+            if torch.npu.is_available():
+                return "local_npu", notes
+            notes.append("torch_npu imported but no NPU device is visible")
+        except Exception as exc:  # noqa: BLE001 - probe
+            notes.append(f"torch_npu unavailable: {type(exc).__name__}")
+        if requested == "local_npu":
+            notes.append("simulation.backend=local_npu is not usable here; falling back")
     if Path(cfg.npusim_bin).is_file():
         site = _runtime_site()
         site_ok = False
+        probe_cmd = [
+            sys.executable,
+            "-c",
+            "import torch, torch_npu; print(torch.npu.is_available())",
+        ]
         if site:
             env = os.environ.copy()
             env["PYTHONPATH"] = site + os.pathsep + env.get("PYTHONPATH", "")
+            if command_log is not None:
+                command_log.log(
+                    "simulate.probe",
+                    probe_cmd,
+                    timeout_s=120,
+                    context={"backend": "npusim", "runtime_site": site},
+                )
             probe = subprocess.run(
-                [sys.executable, "-c", "import torch, torch_npu; print(torch.npu.is_available())"],
+                probe_cmd,
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -83,6 +106,8 @@ def select_backend(cfg: Config) -> tuple[str, list[str]]:
         notes.append(f"npusim found at {cfg.npusim_bin}, but no usable torch_npu runtime")
     else:
         notes.append(f"npusim not found at {cfg.npusim_bin}")
+    if requested == "npusim":
+        notes.append("simulation.backend=npusim is not usable here; skipping simulation")
     return "static", notes
 
 
@@ -93,9 +118,15 @@ def run_simulation(
     cfg: Config,
     *,
     compile_audit: dict[str, Any] | None = None,
+    backend: str | None = None,
+    backend_notes: list[str] | None = None,
+    command_log: CommandLogger | None = None,
 ) -> SimResult:
     started = time.time()
-    backend, notes = select_backend(cfg)
+    if backend is None:
+        backend, notes = select_backend(cfg, command_log)
+    else:
+        notes = list(backend_notes or [])
     if backend == "static":
         result = roofline(spec)
         result.update(
@@ -130,6 +161,21 @@ def run_simulation(
         env = os.environ.copy()
         if cfg.cann.home:
             env["ASCEND_HOME_PATH"] = cfg.cann.home
+        if command_log is not None:
+            command_log.log(
+                "simulate.local_npu",
+                cmd,
+                timeout_s=cfg.simulation.timeout_s,
+                context={
+                    "task_dir": str(task_dir),
+                    "test": str(test_path),
+                    "backend": "local_npu",
+                    "result": str(json_path),
+                    "warmup": cfg.simulation.warmup,
+                    "repeats": cfg.simulation.repeats,
+                    "ascend_home_path": env.get("ASCEND_HOME_PATH", ""),
+                },
+            )
         proc = subprocess.run(
             cmd,
             cwd=str(task_dir),
@@ -156,6 +202,23 @@ def run_simulation(
             env["PYTHONPATH"] = site + os.pathsep + env.get("PYTHONPATH", "")
         if cfg.cann.home:
             env["ASCEND_HOME_PATH"] = cfg.cann.home
+        if command_log is not None:
+            command_log.log(
+                "simulate.npusim",
+                cmd,
+                timeout_s=cfg.simulation.timeout_s,
+                context={
+                    "task_dir": str(task_dir),
+                    "test": str(test_path),
+                    "backend": "npusim",
+                    "soc_version": cfg.cann.soc_version,
+                    "output": str(sim_out),
+                    "result": str(json_path),
+                    "app": app,
+                    "warmup": cfg.simulation.warmup,
+                    "repeats": cfg.simulation.repeats,
+                },
+            )
         proc = subprocess.run(
             cmd,
             cwd=str(task_dir),

@@ -89,6 +89,8 @@ aiop 不是「让模型直接写代码」的代码生成器，而是**带门禁�
 | **HTTP 命令提交与作业日志** | `/v1/commands` 提交白名单 CLI 命令，`/v1/jobs` 查状态/日志；`/v1/tasks` 支持 manifest `op` | 工作区（未提交） |
 | **可搬运测试单文件** | `aiop export` 生成内嵌 kernel、从环境变量发现路径的 `test_<op>.py`，单文件拷到服务器即可运行 | 工作区（未提交） |
 | **结构化用例矩阵** | manifest workload×dtype 全枚举；每个 `(shape, datatype)` 组合独立 kernel 变体；逐用例输出精度/性能指标与覆盖率 | 工作区（未提交） |
+| **全量指令日志** | 编译/仿真/上板全部子进程命令在执行前写入 `commands.log`：完整 argv、shell 命令、cwd、超时与上下文，不截断；级别 `off/error/warn/info/debug` 可调 | 工作区（未提交） |
+| **执行步骤开关** | `steps.compile/simulate/npu/profile` 四个独立开关（配置文件 + CLI + 环境变量）；环境不支持的环节自动跳过并记录原因 | 工作区（未提交） |
 | 知识库 10/11 | manifest 契约规则、Trae draft 全流程 | `242a6ad` / 工作区 |
 
 ### 2.1 端到端能力对照
@@ -103,7 +105,7 @@ aiop 不是「让模型直接写代码」的代码生成器，而是**带门禁�
 | 错误自修正 | 静态/编译分类 + 保守 plan 回退 + LLM repair / `FIX_REQUEST.md` |
 | 仿真验证 | `npusim`/`local_npu`/`static` 三后端，精度混合容差 |
 | 跨服务器上板 | SSH 预检/部署/运行/指标/Profile，生成 `board_report.json` |
-| 可运行服务 | `python -m aiop serve` + HTTP API + CLI + pytest（124 个测试） |
+| 可运行服务 | `python -m aiop serve` + HTTP API + CLI + pytest（142 个测试） |
 
 ## 3. 环境依赖
 
@@ -370,6 +372,7 @@ workspace/<task>/
 ├── result.json / report.md      # 汇总结果与人类可读报告
 ├── manifest.json / state.json   # 任务清单与阶段状态
 ├── run.log                      # 统一进度日志（逐行、带时间戳/阶段）
+├── commands.log                 # 全量指令日志（JSONL，执行前写入完整 argv/上下文）
 ├── contract.json                # TaskContract（语义/ABI/精度/性能目标/资源上限/义务）
 ├── skill.lock / context_manifest.json   # 技能选择、内容锁定、知识召回
 ├── frontier.json                # 计划搜索候选与门禁结果（--search）
@@ -513,6 +516,51 @@ python /tmp/test_softmax_2.py --device npu --json /tmp/result.json
 
 退出码：`0` 通过，`1` 精度/运行失败，`3` 环境不可用（无 torch_npu/设备）。
 
+### 6.11 全量指令日志与执行步骤开关
+
+**指令日志**：编译 worker、仿真（local_npu / npusim / 后端探测）、上板的每条
+`ssh`/`scp`/`bash -lc`/`msprof` 命令，都会在**真正执行前**追加一行 JSON 到
+`workspace/<task>/commands.log`，字段包括：
+
+| 字段 | 内容 |
+|---|---|
+| `stage` | `compile` / `simulate.local_npu` / `simulate.npusim` / `simulate.probe` / `board.preflight` / `board.mkdir` / `board.upload` / `board.run` / `board.fetch` / `board.profile_probe` / `board.profile` |
+| `command` | shell 转义后的完整命令字符串（不截断） |
+| `argv` / `argc` | 原始参数列表与个数，逐项保留（含空格、中文、`--flag=value`） |
+| `cwd` / `timeout_s` / `shell` | 工作目录、超时与是否经 shell |
+| `context` | 该指令的执行上下文（task、module、result 路径、远端命令、host、warmup/repeats 等） |
+| `env` | 仅 `debug` 级别追加：`PATH`/`PYTHONPATH`/`ASCEND_HOME_PATH`/`LD_LIBRARY_PATH` 与 `AIOP_*`（自动排除 KEY/TOKEN/SECRET/PASSWORD） |
+
+级别由 `logging.command_level` 或 `--command-log-level` 控制：
+`info`/`debug` 记录，`warn`/`error` 作为阈值抑制 info 记录，`off` 完全不落盘也不创建文件。
+`--command-log-echo` 可同时把命令行回显到 stderr。日志写入失败只被忽略，绝不阻断命令执行。
+
+**执行步骤开关**：四个开关互相独立，优先级 **CLI > 环境变量 > config YAML > 默认 true**。
+
+```yaml
+steps:
+  compile: true
+  simulate: true
+  npu: true        # NPU 直接执行（上板 / 远端实测）
+  profile: true    # 精度通过后的流水线采集
+```
+
+```bash
+python -m aiop generate --spec examples/softmax.yaml \
+  --no-compile --no-simulate --no-npu --no-profile \
+  --command-log-level debug --command-log-echo
+```
+
+- 未启用的步骤直接跳过，并在 `run.log` 记录原因（`compile step disabled`、
+  `simulate_step_disabled`、`npu_step_disabled`、`profile_step_disabled`）。
+- 环境不支持时同样跳过并记录：无 CANN/bisheng/tilelang（编译）、无可用仿真后端
+  （`no_simulation_backend`）、未配置 `board.host`（`board_host_unset`）、
+  无 `profile_cmd` 且远端无 `msprof`（`profiler_not_available`）。
+- 直接命令 `aiop compile/simulate/board` 也遵守对应开关；`aiop board` 额外遵守
+  `steps.profile`。非法开关值（如 `compile: maybe`）或拼错的键（如 `comiple`）
+  会抛出 `ConfigError`，CLI 以退出码 2 输出 `config error: ...`。
+- 执行分支逐条核对结论见 [reports/execution_branch_analysis.md](reports/execution_branch_analysis.md)（生成物，git 忽略）。
+
 ## 7. 架构与目录
 
 ```text
@@ -535,7 +583,7 @@ aiop/
 ├── examples/                   # softmax.yaml + spec/（25 个 manifest YAML）
 ├── samples/                    # 8 个已验证算子样例 + index.json
 ├── scripts/                    # build_samples.py / sync_skills.sh
-├── tests/                      # 124 个单元 + 端到端测试
+├── tests/                      # 142 个单元 + 端到端测试
 ├── config/aiop.yaml
 ├── reports/                    # 基准报告
 └── workspace/                  # 运行时任务产物（git 忽略）
@@ -646,6 +694,12 @@ Campaign 实测（本机）：`softmax_2`（[examples/softmax.yaml](examples/sof
 | `board.profile_cmd` | `""` | 实测后的可选 profile 命令（如 `msprof ...`） |
 | `board.timeout_s` | `1800` | 远端运行超时 |
 | `board.repeats` / `board.warmup` | `50` / `10` | 上板计时参数 |
+| `steps.compile` | `true` | 是否执行设备编译；false 时直接跳过并记录原因 |
+| `steps.simulate` | `true` | 是否执行仿真；false 时跳过 L3 |
+| `steps.npu` | `true` | 是否执行 NPU 直接执行/上板；false 时跳过 L4 |
+| `steps.profile` | `true` | 精度通过后是否采集流水线 profile |
+| `logging.command_level` | `info` | 指令日志级别：`off`/`error`/`warn`/`info`/`debug`；info/debug 落盘 |
+| `logging.echo_commands` | `false` | 是否把完整命令行回显到 stderr |
 | `agent.max_attempts` | `3` | 生成/静态/编译的最大尝试轮数 |
 | `agent.max_sim_attempts` | `2` | 预留配置项（当前实现仿真失败后固定再试 1 次） |
 | `agent.llm.enabled` | `false` | 配置了 `base_url` + `model` 时自动置为 `true` |
@@ -670,6 +724,12 @@ Campaign 实测（本机）：`softmax_2`（[examples/softmax.yaml](examples/sof
 | `AIOP_BOARD_DIR` | `board.remote_dir` | 远端工作目录 |
 | `AIOP_BOARD_PYTHON` | `board.python` | 远端解释器 |
 | `AIOP_BOARD_ENV_SCRIPT` | `board.env_script` | 远端环境脚本 |
+| `AIOP_STEP_COMPILE` | `steps.compile` | 编译开关（true/false/yes/no/on/off/1/0） |
+| `AIOP_STEP_SIMULATE` | `steps.simulate` | 仿真开关 |
+| `AIOP_STEP_NPU` | `steps.npu` | NPU 直接执行/上板开关 |
+| `AIOP_STEP_PROFILE` | `steps.profile` | 流水线采集开关 |
+| `AIOP_COMMAND_LOG_LEVEL` | `logging.command_level` | 指令日志级别 |
+| `AIOP_COMMAND_LOG_ECHO` | `logging.echo_commands` | 是否回显命令行 |
 | `AIOP_LLM_BASE_URL` | `agent.llm.base_url` | OpenAI 兼容端点 |
 | `AIOP_LLM_MODEL` | `agent.llm.model` | 模型 id |
 | `AIOP_LLM_API_KEY` | —（`api_key_env` 指定） | 模型 Key |
@@ -681,14 +741,14 @@ Campaign 实测（本机）：`softmax_2`（[examples/softmax.yaml](examples/sof
 
 | 命令 | 作用 | 主要参数 |
 |---|---|---|
-| `generate` | 跑完整流水线 | `--spec/--requirement/--manifest+--op`、`--workload`、`--dtype-case`、`--strategy`、`--draft`、`--search`、`--search-budget`、`--no-progress`、`--task-id`、`--simulate/--no-simulate`、`--board`、`--force-board`、`--reuse`、`--json` |
-| `campaign` | 六步全链路 + 汇总报告 | 与 `generate` 相同的输入选择器、`--search/--no-search`、`--search-budget`、`--no-progress`、`--simulate/--no-simulate`、`--board`、`--out` |
+| `generate` | 跑完整流水线 | `--spec/--requirement/--manifest+--op`、`--workload`、`--dtype-case`、`--strategy`、`--draft`、`--search`、`--search-budget`、`--no-progress`、`--task-id`、`--compile/--no-compile`、`--simulate/--no-simulate`、`--npu/--no-npu`、`--profile/--no-profile`、`--board/--no-board`、`--command-log-level`、`--command-log-echo`、`--force-board`、`--reuse`、`--json` |
+| `campaign` | 六步全链路 + 汇总报告 | 与 `generate` 相同的输入选择器与步骤开关、`--search/--no-search`、`--search-budget`、`--no-progress`、`--out` |
 | `prompt` | 写 `PROMPT.md` 供 IDE Agent 起草 | 与 `generate` 相同的输入选择器 |
 | `export` | 导出单文件可搬运测试 | `task`、`--out`（默认 `<task>/export`） |
 | `check` | 只跑 L0 静态 | `task` |
-| `compile` | 只跑 L1/L2 | `task` |
-| `simulate` | 只跑 L3 | `task` |
-| `board` | 只跑 L4 | `task`、`--host`、`--force` |
+| `compile` | 只跑 L1/L2 | `task`、`--command-log-level`、`--command-log-echo` |
+| `simulate` | 只跑 L3 | `task`、`--command-log-level`、`--command-log-echo` |
+| `board` | 只跑 L4 | `task`、`--host`、`--force`、`--profile/--no-profile`、`--command-log-level`、`--command-log-echo` |
 | `search` | 检索知识库 | `query`、`-k` |
 | `env` | 探测工具链 | `--probe-compile` |
 | `manifest` | 查看/转换 manifest | `manifest list/show/convert`，父级 `--manifest` |
@@ -854,6 +914,9 @@ write_campaign_report(task_dir, result, negative=negative)
 | 统一进度日志 | `aiop/agent/progress.py`、`orchestrator.py`、`service/server.py` | `run.log`、终端 stderr 逐行、`GET /v1/tasks/{id}/log` |
 | HTTP 命令提交 | `aiop/service/server.py` | `POST /v1/commands`、`GET /v1/jobs`、`/v1/jobs/{id}/log` |
 | 可搬运测试导出 | `aiop/simulation/testgen.py`、`aiop/cli.py` | `aiop export` → 内嵌 kernel 的单文件 `test_<op>.py` |
+| 全量指令日志 | `aiop/runtime/command_log.py`、`checks/compiler.py`、`simulation/runner.py`、`board/runner.py` | 执行前写 `commands.log`（完整 argv/上下文/超时），级别可配 |
+| 执行步骤开关 | `aiop/config.py`、`aiop/agent/orchestrator.py`、`aiop/cli.py` | `steps.compile/simulate/npu/profile`；CLI/环境变量覆盖；不支持即跳过 |
+| 配置校验 | `aiop/config.py`、`aiop/cli.py` | 非法布尔/日志级别/未知键 → `ConfigError`，CLI 退出码 2 |
 
 ## 12. 知识库与多代理
 
@@ -890,7 +953,7 @@ Skill：[.agent/skills/aiop-op-pipeline/SKILL.md](.agent/skills/aiop-op-pipeline
 ## 13. 测试与基准
 
 ```bash
-python -m pytest -q              # 124 个测试（静态/规划/manifest/open/draft/契约/搜索/审计/进度/HTTP/导出/端到端）
+python -m pytest -q              # 142 个测试（静态/规划/manifest/open/draft/契约/搜索/审计/进度/HTTP/导出/执行开关/指令日志/端到端）
 python -m pytest -q -m slow      # 仅端到端（会调用 bisheng）
 
 python -m aiop eval --cases aiop/eval/cases.yaml --no-simulate \
@@ -962,6 +1025,7 @@ python -m aiop campaign --op GemmFwdOp --workload 1 --dtype-case 0 --out reports
 | `v0.1.0+manifest/llm` | `242a6ad` `feat:llm` | TileOPs manifest 绑定（205 条目/23 映射）、LLM open 模式与 repair、GEMM 非 fp32 输出 cast、8 个 manifest 基准用例（36 总数）、知识库 10、`examples/spec/` 25 个 manifest YAML（含 `types.yaml`） |
 | `v0.1.0+draft`（工作区，未提交） | — | `prompt` 命令、`--strategy draft`/`--draft`、`FIX_REQUEST.md`、`golden_draft.py`、知识库 11 |
 | `v0.1.0+campaign`（工作区，未提交） | — | TaskContract、SkillRegistry、有界计划搜索、LoweringAudit、EvidenceStore/Diagnoser、多场景仿真 + 负例门禁、`campaign` 命令、统一 `run.log` 与终端进度、HTTP `/v1/commands` + `/v1/jobs`、`export` 单文件测试；测试 71 → 90 |
+| `v0.1.0+exec`（工作区，未提交） | — | 全量指令日志 `commands.log`（执行前记录完整 argv/上下文）、`steps.compile/simulate/npu/profile` 独立开关（配置 + CLI + 环境变量）、非法配置校验、按需执行与环境不支持自动跳过；测试 124 → 142 |
 
 > `pyproject.toml` 当前版本号仍为 `0.1.0`；上表用提交批次标记功能适用版本，便于对应代码状态。
 

@@ -49,6 +49,7 @@ from ..board.runner import run_board
 from ..config import PROJECT_ROOT, load_config
 from ..knowledge.index import default_index
 from ..manifest import bind_operator
+from ..runtime.command_log import logger_for
 from ..specs import TaskSpec, spec_from_requirement
 
 EXECUTOR = ThreadPoolExecutor(max_workers=2)
@@ -452,14 +453,33 @@ class Handler(BaseHTTPRequestHandler):
             if not spec_path.is_file():
                 self._send(404, {"error": "task not found"})
                 return
+            if not cfg.steps.npu:
+                self._send(
+                    200,
+                    {
+                        "task_id": task_id,
+                        "status": "skipped",
+                        "reason": "npu step disabled by configuration (steps.npu=false)",
+                    },
+                )
+                return
             spec = TaskSpec.from_yaml(spec_path)
+            command_log = logger_for(
+                task_dir,
+                level=cfg.logging.command_level,
+                echo=cfg.logging.echo_commands,
+            )
 
             def run_board_job() -> None:
                 reporter = ProgressReporter(task_dir, task_id)
                 reporter.emit("board", "start", host=cfg.board.host or "unset")
                 try:
                     result = run_board(
-                        task_dir, spec, cfg, force=bool(data.get("force", False))
+                        task_dir,
+                        spec,
+                        cfg,
+                        force=bool(data.get("force", False)),
+                        command_log=command_log,
                     )
                     (task_dir / "board_report.json").write_text(
                         json.dumps(result.to_dict(), indent=2), encoding="utf-8"

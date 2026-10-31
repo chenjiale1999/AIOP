@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ..board.runner import run_board
-from ..checks.compiler import CompileResult, compile_kernel
+from ..checks.compiler import CompileResult, compile_kernel, compile_support
 from ..checks.static import Report as StaticReport
 from ..checks.static import run_static
 from ..config import Config, load_config
@@ -24,8 +24,9 @@ from ..generation.generator import generate, repair
 from ..generation.llm import LLMClient
 from ..generation.templates import TEMPLATE_NAME
 from ..knowledge.index import KnowledgeIndex, default_index
+from ..runtime.command_log import CommandLogger, logger_for
 from ..runtime.hardware import Plan, build_open_plan, build_plan, roofline
-from ..simulation.runner import SimResult, run_simulation
+from ..simulation.runner import SimResult, run_simulation, select_backend
 from ..simulation.testgen import GOLDEN_FAMILIES, write_test
 from ..specs import TaskSpec, UnsupportedOperator
 from .audit import build_lowering_audit, write_lowering_audit
@@ -40,6 +41,15 @@ from .state import TaskState
 
 def _sha8(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+
+
+def _skipped_compile(reason: str) -> CompileResult:
+    return CompileResult(
+        ok=False,
+        category="skipped",
+        error=reason,
+        hint="stage disabled or environment lacks the required toolchain",
+    )
 
 
 def task_id_for(spec: TaskSpec) -> str:
@@ -136,8 +146,8 @@ class OperatorAgent:
         spec: TaskSpec,
         *,
         task_id: str | None = None,
-        simulate: bool = True,
-        board: bool = False,
+        simulate: bool | None = None,
+        board: bool | None = None,
         force_board: bool = False,
         strategy: str = "auto",
         reuse_workspace: bool = False,
@@ -149,6 +159,19 @@ class OperatorAgent:
         started = time.time()
         task_id = task_id or task_id_for(spec)
         task_dir = self.cfg.workspace / task_id
+        board_requested = board
+        # Independent stage switches: disabled or unsupported stages are skipped.
+        simulate = bool(
+            self.cfg.steps.simulate if simulate is None else (simulate and self.cfg.steps.simulate)
+        )
+        if board is None:
+            board = bool(self.cfg.steps.npu and self.cfg.board.host)
+        else:
+            board = bool(board and self.cfg.steps.npu)
+        compile_enabled = bool(self.cfg.steps.compile)
+        compile_supported, compile_reason = (
+            compile_support(self.cfg) if compile_enabled else (False, "compile step disabled")
+        )
         if reuse_workspace and task_dir.is_dir():
             pass
         else:
@@ -163,6 +186,11 @@ class OperatorAgent:
         spec.save(task_dir / "spec.yaml")
         evidence = EvidenceStore(task_dir, task_id)
         reporter = ProgressReporter(task_dir, task_id, enabled=progress)
+        command_log: CommandLogger = logger_for(
+            task_dir,
+            level=self.cfg.logging.command_level,
+            echo=self.cfg.logging.echo_commands,
+        )
         reporter.emit(
             "task",
             "start",
@@ -171,7 +199,20 @@ class OperatorAgent:
             strategy=strategy,
             simulate=simulate,
             board=board,
+            steps=json.dumps(self.cfg.steps.__dict__, sort_keys=True),
         )
+        # Disabled stages are recorded once, before the pipeline starts, so the
+        # run log states why a stage never ran.
+        if not simulate:
+            reporter.emit("simulate", "skipped", reason="simulate_step_disabled")
+        if not self.cfg.steps.npu:
+            reporter.emit("board", "skipped", reason="npu_step_disabled")
+        elif not board:
+            reporter.emit(
+                "board",
+                "skipped",
+                reason="board_not_requested" if board_requested is False else "board_host_unset",
+            )
 
         knowledge_hits = self.kb.search(
             f"{spec.family} {spec.name} tiling 内存 精度 性能", k=5
@@ -308,7 +349,11 @@ class OperatorAgent:
             reporter.emit("contract", "failed", error=f"{type(exc).__name__}: {exc}")
 
         # Stage 1c: bounded plan search (opt-in; deterministic templates only).
-        if search and mode == "template":
+        # The search ranks candidates through the device-compile gate, so it is
+        # skipped together with that stage instead of compiling behind its back.
+        if search and mode == "template" and not (compile_enabled and compile_supported):
+            reporter.emit("search", "skipped", reason=compile_reason or "compile step disabled")
+        elif search and mode == "template":
             reporter.emit("search", "start", budget=search_budget)
             try:
                 controller = SearchController(self.cfg)
@@ -320,6 +365,7 @@ class OperatorAgent:
                     knowledge=knowledge_context,
                     budget=search_budget,
                     on_event=lambda message: reporter.emit("search", message),
+                    command_log=command_log,
                 )
                 artifacts["frontier"] = str(frontier)
                 if chosen_plan.to_dict() != plan.to_dict():
@@ -504,15 +550,25 @@ class OperatorAgent:
                     )
                 continue
 
-            state.enter("compile")
-            reporter.emit("compile", "start", timeout_s=self.cfg.compile.timeout_s)
-            compile_result = compile_kernel(kernel_path, task_dir, self.cfg)
-            reporter.emit(
-                "compile",
-                "passed" if compile_result.ok else "failed",
-                category=compile_result.category,
-                elapsed_s=round(compile_result.elapsed_s, 2),
-            )
+            if compile_enabled and compile_supported:
+                state.enter("compile")
+                reporter.emit("compile", "start", timeout_s=self.cfg.compile.timeout_s)
+                compile_result = compile_kernel(
+                    kernel_path, task_dir, self.cfg, command_log=command_log
+                )
+                reporter.emit(
+                    "compile",
+                    "passed" if compile_result.ok else "failed",
+                    category=compile_result.category,
+                    elapsed_s=round(compile_result.elapsed_s, 2),
+                )
+            else:
+                compile_result = _skipped_compile(compile_reason)
+                state.stages["compile"] = "skipped"
+                reporter.emit("compile", "skipped", reason=compile_reason)
+                (task_dir / "compile_result.json").write_text(
+                    json.dumps(compile_result.to_dict(), indent=2), encoding="utf-8"
+                )
             attempts.append(
                 {
                     "attempt": attempt,
@@ -526,7 +582,11 @@ class OperatorAgent:
             evidence.record(
                 "compile",
                 "compile_gate",
-                "passed" if compile_result.ok else "failed",
+                (
+                    "passed"
+                    if compile_result.ok
+                    else ("skipped" if compile_result.category == "skipped" else "failed")
+                ),
                 category=compile_result.category,
                 facts={
                     "attempt": attempt,
@@ -544,6 +604,8 @@ class OperatorAgent:
                 f"- error: {compile_result.error[-800:] or 'none'}\n"
                 f"- plan: {json.dumps(current_plan.to_dict(), sort_keys=True)}",
             )
+            if compile_result.category == "skipped":
+                break
             if compile_result.ok:
                 state.complete("compile")
                 break
@@ -610,15 +672,25 @@ class OperatorAgent:
                 artifacts=[str(task_dir / "static_report.json")],
             )
             if static_report.ok:
-                state.enter("compile")
-                reporter.emit("compile", "start", timeout_s=self.cfg.compile.timeout_s)
-                compile_result = compile_kernel(kernel_path, task_dir, self.cfg)
-                reporter.emit(
-                    "compile",
-                    "passed" if compile_result.ok else "failed",
-                    category=compile_result.category,
-                    elapsed_s=round(compile_result.elapsed_s, 2),
-                )
+                if compile_enabled and compile_supported:
+                    state.enter("compile")
+                    reporter.emit("compile", "start", timeout_s=self.cfg.compile.timeout_s)
+                    compile_result = compile_kernel(
+                        kernel_path, task_dir, self.cfg, command_log=command_log
+                    )
+                    reporter.emit(
+                        "compile",
+                        "passed" if compile_result.ok else "failed",
+                        category=compile_result.category,
+                        elapsed_s=round(compile_result.elapsed_s, 2),
+                    )
+                else:
+                    compile_result = _skipped_compile(compile_reason)
+                    state.stages["compile"] = "skipped"
+                    reporter.emit("compile", "skipped", reason=compile_reason)
+                    (task_dir / "compile_result.json").write_text(
+                        json.dumps(compile_result.to_dict(), indent=2), encoding="utf-8"
+                    )
                 attempts.append(
                     {
                         "attempt": "template_fallback",
@@ -638,9 +710,12 @@ class OperatorAgent:
         artifacts["compile_report"] = str(task_dir / "compile_result.json")
         state.artifacts = artifacts
 
-        compile_ok = bool(compile_result and compile_result.ok)
+        compile_ran_ok = bool(compile_result and compile_result.ok)
+        compile_gate_ok = compile_ran_ok or bool(
+            compile_result and compile_result.category == "skipped"
+        )
         lowering_audit = None
-        if compile_ok:
+        if compile_ran_ok:
             lowering_audit = build_lowering_audit(spec, current_plan, compile_result)
             artifacts["lowering_audit"] = str(
                 write_lowering_audit(task_dir, lowering_audit)
@@ -659,14 +734,16 @@ class OperatorAgent:
                 lowering_audit["status"],
                 checks=len(lowering_audit["checks"]),
             )
-        if compile_ok and current_plan is not plan and mode == "template":
+        if compile_ran_ok and current_plan is not plan and mode == "template":
             # Documents must reflect the plan that actually compiled.
             design = build_design(spec, current_plan, knowledge_hits)
             (task_dir / "DESIGN.md").write_text(design, encoding="utf-8")
             replaced_plan = current_plan
 
         sim_result: SimResult | None = None
-        if compile_ok and simulate and not can_test:
+        if simulate and not compile_gate_ok:
+            reporter.emit("simulate", "skipped", reason="compile_gate_not_passed")
+        if compile_gate_ok and simulate and not can_test:
             reporter.emit("simulate", "skipped", reason="no_golden", golden_source=golden_source)
             self._write_debug(
                 task_dir / "debug_log.md",
@@ -675,15 +752,27 @@ class OperatorAgent:
                 "- reason: manifest metadata inputs need their `values` generators, "
                 "which aiop does not implement",
             )
-        if compile_ok and simulate and can_test:
+        if compile_gate_ok and simulate and can_test:
             state.enter("simulate")
-            reporter.emit("simulate", "start", backend=self.cfg.simulation.backend)
+            backend, backend_notes = select_backend(self.cfg, command_log)
+            if backend == "static":
+                reporter.emit(
+                    "simulate",
+                    "skipped",
+                    reason="no_simulation_backend",
+                    notes="; ".join(backend_notes),
+                )
+            else:
+                reporter.emit("simulate", "start", backend=backend)
             sim_result = run_simulation(
                 task_dir,
                 test_path,
                 spec,
                 self.cfg,
                 compile_audit=compile_result.audit if compile_result else None,
+                backend=backend,
+                backend_notes=backend_notes,
+                command_log=command_log,
             )
             (task_dir / "simulation_report.json").write_text(
                 json.dumps(sim_result.to_dict(), indent=2), encoding="utf-8"
@@ -754,21 +843,44 @@ class OperatorAgent:
                     enumerate_variants=(mode == "template"),
                 )
                 static_report = run_static(spec, current_plan, kernel_path, self.cfg)
-                reporter.emit("compile", "start", phase="simulate_retry")
-                compile_result = compile_kernel(kernel_path, task_dir, self.cfg)
-                reporter.emit(
-                    "compile",
-                    "passed" if compile_result.ok else "failed",
-                    phase="simulate_retry",
-                    category=compile_result.category,
-                )
-                if compile_result.ok:
+                if compile_enabled and compile_supported:
+                    reporter.emit("compile", "start", phase="simulate_retry")
+                    compile_result = compile_kernel(
+                        kernel_path, task_dir, self.cfg, command_log=command_log
+                    )
+                    reporter.emit(
+                        "compile",
+                        "passed" if compile_result.ok else "failed",
+                        phase="simulate_retry",
+                        category=compile_result.category,
+                    )
+                else:
+                    compile_result = _skipped_compile(compile_reason)
+                    reporter.emit(
+                        "compile",
+                        "skipped",
+                        phase="simulate_retry",
+                        reason=compile_reason,
+                    )
+                if compile_result.ok or compile_result.category == "skipped":
+                    backend, backend_notes = select_backend(self.cfg, command_log)
+                    if backend == "static":
+                        reporter.emit(
+                            "simulate",
+                            "skipped",
+                            phase="simulate_retry",
+                            reason="no_simulation_backend",
+                            notes="; ".join(backend_notes),
+                        )
                     sim_result = run_simulation(
                         task_dir,
                         test_path,
                         spec,
                         self.cfg,
                         compile_audit=compile_result.audit,
+                        backend=backend,
+                        backend_notes=backend_notes,
+                        command_log=command_log,
                     )
                     (task_dir / "simulation_report.json").write_text(
                         json.dumps(sim_result.to_dict(), indent=2), encoding="utf-8"
@@ -800,7 +912,7 @@ class OperatorAgent:
         sim_ok_for_board = not simulate or (
             sim_result is not None and sim_result.status in ("passed", "unavailable")
         )
-        if board and compile_ok and sim_ok_for_board:
+        if board and compile_gate_ok and sim_ok_for_board:
             # Board packaging expects manifest.json before the run.
             (task_dir / "manifest.json").write_text(
                 json.dumps(
@@ -821,7 +933,7 @@ class OperatorAgent:
             state.enter("board")
             reporter.emit("board", "start", host=self.cfg.board.host or "unset")
             board_result = run_board(
-                task_dir, spec, self.cfg, force=force_board
+                task_dir, spec, self.cfg, force=force_board, command_log=command_log
             )
             (task_dir / "board_report.json").write_text(
                 json.dumps(board_result.to_dict(), indent=2), encoding="utf-8"
@@ -848,6 +960,14 @@ class OperatorAgent:
                 state.complete("board")
             else:
                 state.stages["board"] = board_result.status
+        elif board and not compile_gate_ok:
+            evidence.record(
+                "board",
+                "board_run",
+                "skipped",
+                facts={"reason": "compile gate did not pass"},
+            )
+            reporter.emit("board", "skipped", reason="compile_gate_not_passed")
         elif board and not sim_ok_for_board:
             board_result = None
             evidence.record(
@@ -865,7 +985,7 @@ class OperatorAgent:
             )
 
         # Final status and report
-        if not compile_ok:
+        if not compile_gate_ok:
             if compile_result is None:
                 status = "blocked_static"
             elif compile_result.category == "generator":
@@ -886,10 +1006,10 @@ class OperatorAgent:
         # Only a reference aiop owns counts as independent evidence; an LLM-written
         # golden agreeing with an LLM-written kernel is not proof.
         trusted_golden = mode == "template"
-        verified = bool(compile_ok and sim_result and sim_result.passed and trusted_golden)
+        verified = bool(compile_ran_ok and sim_result and sim_result.passed and trusted_golden)
 
         # The delivered plan is what the contract must describe.
-        final_plan = current_plan if compile_ok else plan
+        final_plan = current_plan if compile_gate_ok else plan
         if contract is not None:
             contract = build_contract(
                 spec,
@@ -901,6 +1021,8 @@ class OperatorAgent:
         diagnosis = diagnose(evidence.records)
         artifacts["evidence"] = str(evidence.path)
         artifacts["diagnosis"] = str(write_diagnosis(task_dir, diagnosis))
+        if command_log.enabled and command_log.path.is_file():
+            artifacts["commands_log"] = str(command_log.path)
 
         state.status = status
         state.save(task_dir / "state.json")
@@ -925,6 +1047,8 @@ class OperatorAgent:
             "compile": compile_result.to_dict() if compile_result else None,
             "simulation": sim_result.to_dict() if sim_result else None,
             "board": board_result.to_dict() if board_result else None,
+            "steps": dict(self.cfg.steps.__dict__),
+            "command_log": str(command_log.path),
             "attempts": attempts,
             "knowledge": knowledge_hits,
             "artifacts": artifacts,
@@ -1170,6 +1294,14 @@ class OperatorAgent:
         golden_source: str = "aiop-builtin",
     ) -> list[str]:
         notes: list[str] = []
+        if not self.cfg.steps.compile:
+            notes.append("compile stage disabled by configuration (steps.compile=false).")
+        elif compile_result and compile_result.category == "skipped":
+            notes.append(f"compile stage skipped: {compile_result.error}.")
+        if not self.cfg.steps.simulate:
+            notes.append("simulation stage disabled by configuration (steps.simulate=false).")
+        if not self.cfg.steps.npu:
+            notes.append("NPU/board stage disabled by configuration (steps.npu=false).")
         if mode == "open" and compile_result and compile_result.ok:
             notes.append(
                 "open-ended mode: no A5 template family; the kernel was drafted by the LLM and "

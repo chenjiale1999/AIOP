@@ -24,6 +24,7 @@ from ..checks.compiler import compile_kernel
 from ..checks.static import run_static
 from ..config import Config
 from ..generation.generator import generate
+from ..runtime.command_log import CommandLogger
 from ..runtime.hardware import (
     AIC_CORES,
     AIV_CORES,
@@ -262,6 +263,7 @@ class SearchController:
         knowledge: str = "",
         budget: int = 4,
         on_event: Callable[[str], None] | None = None,
+        command_log: CommandLogger | None = None,
     ) -> tuple[Plan, Path]:
         task_dir = Path(task_dir)
         candidates = propose_candidates(spec, base)
@@ -296,7 +298,9 @@ class SearchController:
                 )
                 static_ok = report.ok
                 if static_ok:
-                    result = compile_kernel(kernel, cdir, self.cfg)
+                    result = compile_kernel(
+                        kernel, cdir, self.cfg, command_log=command_log
+                    )
                     compile_ok = result.ok
                     if not compile_ok:
                         category = result.category

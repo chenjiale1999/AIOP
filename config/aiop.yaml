@@ -28,6 +28,20 @@ simulation:
   repeats: 20
   warmup: 5
 
+# Independent execution switches. Disabled stages are skipped without
+# changing any business code; unsupported environments are skipped as well.
+steps:
+  compile: true
+  simulate: true
+  npu: true        # direct NPU / board execution
+  profile: true    # pipeline profiling after precision passes
+
+logging:
+  # off | error | warn | info | debug
+  command_level: info
+  # Echo full command lines to stderr in addition to commands.log
+  echo_commands: false
+
 board:
   host: ""
   port: 22

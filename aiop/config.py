@@ -16,6 +16,10 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+class ConfigError(ValueError):
+    """Invalid user configuration (wrong type, unknown step, bad log level)."""
+
+
 def _expand(value: str | os.PathLike[str] | None) -> str:
     if value is None:
         return ""
@@ -142,6 +146,22 @@ class SimulationConfig:
 
 
 @dataclass
+class StepsConfig:
+    """Independent on/off switches for optional execution stages."""
+
+    compile: bool = True
+    simulate: bool = True
+    npu: bool = True
+    profile: bool = True
+
+
+@dataclass
+class LoggingConfig:
+    command_level: str = "info"  # off | error | warn | info | debug
+    echo_commands: bool = False
+
+
+@dataclass
 class BoardConfig:
     host: str = ""
     port: int = 22
@@ -178,6 +198,8 @@ class Config:
     cann: CannConfig = field(default_factory=CannConfig)
     compile: CompileConfig = field(default_factory=CompileConfig)
     simulation: SimulationConfig = field(default_factory=SimulationConfig)
+    steps: StepsConfig = field(default_factory=StepsConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
     board: BoardConfig = field(default_factory=BoardConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     raw: dict[str, Any] = field(default_factory=dict)
@@ -216,6 +238,72 @@ def _default_config_path() -> Path:
     return PROJECT_ROOT / "config" / "aiop.yaml"
 
 
+def _validate_section(data: dict[str, Any], name: str, allowed: set[str]) -> None:
+    """Reject typos instead of silently ignoring an unknown switch."""
+    section = data.get(name)
+    if section is None:
+        return
+    if not isinstance(section, dict):
+        raise ConfigError(
+            f"invalid {name} section: expected a mapping with keys "
+            f"{', '.join(sorted(allowed))}"
+        )
+    unknown = sorted(set(section) - allowed)
+    if unknown:
+        raise ConfigError(
+            f"unknown {name} option(s): {', '.join(unknown)}; "
+            f"expected {', '.join(sorted(allowed))}"
+        )
+
+
+def _coerce_bool(name: str, value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        key = value.strip().lower()
+        if key in ("1", "true", "yes", "on"):
+            return True
+        if key in ("0", "false", "no", "off"):
+            return False
+    raise ConfigError(
+        f"invalid {name}={value!r}; expected a boolean "
+        "(true/false, yes/no, on/off, 1/0)"
+    )
+
+
+def _normalize_log_level(value: Any) -> str:
+    key = str(value or "info").strip().lower()
+    if key == "warning":
+        key = "warn"
+    if key not in ("off", "error", "warn", "info", "debug"):
+        raise ConfigError(
+            f"invalid logging.command_level={value!r}; "
+            "expected one of off, error, warn, info, debug"
+        )
+    return key
+
+
+def apply_steps(
+    cfg: Config,
+    *,
+    compile: bool | None = None,
+    simulate: bool | None = None,
+    npu: bool | None = None,
+    profile: bool | None = None,
+) -> None:
+    """Apply CLI overrides without touching unrelated switches."""
+    for name, value in (
+        ("compile", compile),
+        ("simulate", simulate),
+        ("npu", npu),
+        ("profile", profile),
+    ):
+        if value is not None:
+            setattr(cfg.steps, name, bool(value))
+
+
 def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     cfg = Config()
     candidate = Path(path) if path else Path(os.environ.get("AIOP_CONFIG", _default_config_path()))
@@ -224,11 +312,17 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             data = yaml.safe_load(fh) or {}
     else:
         data = {}
+    if not isinstance(data, dict):
+        raise ConfigError("config root must be a YAML mapping")
     cfg.raw = data
+    _validate_section(data, "steps", {"compile", "simulate", "npu", "profile"})
+    _validate_section(data, "logging", {"command_level", "echo_commands"})
     _apply_dataclass(cfg.paths, data.get("paths"))
     _apply_dataclass(cfg.cann, data.get("cann"))
     _apply_dataclass(cfg.compile, data.get("compile"))
     _apply_dataclass(cfg.simulation, data.get("simulation"))
+    _apply_dataclass(cfg.steps, data.get("steps"))
+    _apply_dataclass(cfg.logging, data.get("logging"))
     _apply_dataclass(cfg.board, data.get("board"))
     _apply_dataclass(cfg.agent, data.get("agent"))
     _apply_dataclass(cfg.agent.llm, (data.get("agent") or {}).get("llm"))
@@ -271,6 +365,24 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     if not cfg.cann.home or not Path(cfg.cann.home).is_dir():
         cfg.cann.home = discover_cann_home()
     cfg.cann.npusim = _expand(cfg.cann.npusim)
+    cfg.simulation.backend = str(cfg.simulation.backend or "auto").strip().lower()
+    if cfg.simulation.backend not in ("auto", "npusim", "local_npu", "static"):
+        raise ConfigError(
+            f"invalid simulation.backend={cfg.simulation.backend!r}; "
+            "expected one of auto, npusim, local_npu, static"
+        )
+
+    for field_name in ("compile", "simulate", "npu", "profile"):
+        env_name = f"AIOP_STEP_{field_name.upper()}"
+        raw = os.environ.get(env_name, getattr(cfg.steps, field_name))
+        setattr(cfg.steps, field_name, _coerce_bool(f"steps.{field_name}", raw))
+    cfg.logging.command_level = _normalize_log_level(
+        os.environ.get("AIOP_COMMAND_LOG_LEVEL", cfg.logging.command_level)
+    )
+    cfg.logging.echo_commands = _coerce_bool(
+        "logging.echo_commands",
+        os.environ.get("AIOP_COMMAND_LOG_ECHO", cfg.logging.echo_commands),
+    )
 
     if cfg.agent.llm.base_url and cfg.agent.llm.model:
         cfg.agent.llm.enabled = True

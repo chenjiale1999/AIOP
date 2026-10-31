@@ -11,11 +11,12 @@ from .agent.campaign import run_negative_probe, write_campaign_report
 from .agent.design import build_design, build_draft_prompt, build_open_design
 from .agent.orchestrator import OperatorAgent, task_id_for
 from .board.runner import run_board
-from .checks.compiler import compile_kernel
+from .checks.compiler import CompileResult, compile_kernel
 from .checks.static import run_static
-from .config import load_config
+from .config import ConfigError, apply_steps, load_config
 from .knowledge.index import default_index
 from .manifest import bind_operator, describe_operator, list_operators
+from .runtime.command_log import logger_for
 from .runtime.hardware import Plan, build_open_plan, build_plan
 from .simulation.casematrix import input_key, plan_variants
 from .simulation.runner import run_simulation
@@ -63,8 +64,25 @@ def _load_task(task_arg: str) -> tuple[Path, TaskSpec, Plan]:
     return task_dir, spec, plan
 
 
+def _apply_cli_steps(cfg, args) -> None:
+    apply_steps(
+        cfg,
+        compile=getattr(args, "step_compile", None),
+        simulate=getattr(args, "simulate", None),
+        npu=getattr(args, "npu", None),
+        profile=getattr(args, "profile", None),
+    )
+    level = getattr(args, "command_log_level", "")
+    if level:
+        cfg.logging.command_level = level
+    echo = getattr(args, "command_log_echo", None)
+    if echo is not None:
+        cfg.logging.echo_commands = echo
+
+
 def cmd_generate(args) -> int:
     cfg = load_config(args.config or None)
+    _apply_cli_steps(cfg, args)
     spec = _load_spec(args)
     agent = OperatorAgent(cfg)
     result = agent.run(
@@ -101,6 +119,7 @@ def cmd_generate(args) -> int:
 def cmd_campaign(args) -> int:
     """Run the full six-step campaign and archive one consolidated report."""
     cfg = load_config(args.config or None)
+    _apply_cli_steps(cfg, args)
     spec = _load_spec(args)
     result = OperatorAgent(cfg).run(
         spec,
@@ -215,26 +234,88 @@ def cmd_check(args) -> int:
 
 def cmd_compile(args) -> int:
     cfg = load_config(args.config or None)
+    _apply_cli_steps(cfg, args)
     task_dir, spec, plan = _load_task(args.task)
-    result = compile_kernel(task_dir / f"{spec.name}.py", task_dir, cfg)
+    if not cfg.steps.compile:
+        result = CompileResult(
+            ok=False,
+            category="skipped",
+            error="compile step disabled by configuration (steps.compile=false)",
+            hint="enable steps.compile or set AIOP_STEP_COMPILE=true",
+        )
+        print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+        return 0
+    command_log = logger_for(
+        task_dir,
+        level=cfg.logging.command_level,
+        echo=cfg.logging.echo_commands,
+    )
+    result = compile_kernel(
+        task_dir / f"{spec.name}.py", task_dir, cfg, command_log=command_log
+    )
     print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
     return 0 if result.ok else 1
 
 
 def cmd_simulate(args) -> int:
     cfg = load_config(args.config or None)
+    _apply_cli_steps(cfg, args)
     task_dir, spec, plan = _load_task(args.task)
-    result = run_simulation(task_dir, task_dir / f"test_{spec.name}.py", spec, cfg)
+    if not cfg.steps.simulate:
+        print(
+            json.dumps(
+                {
+                    "status": "skipped",
+                    "reason": "simulate step disabled by configuration (steps.simulate=false)",
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    command_log = logger_for(
+        task_dir,
+        level=cfg.logging.command_level,
+        echo=cfg.logging.echo_commands,
+    )
+    result = run_simulation(
+        task_dir,
+        task_dir / f"test_{spec.name}.py",
+        spec,
+        cfg,
+        command_log=command_log,
+    )
     print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
     return 0 if result.passed or result.status == "unavailable" else 1
 
 
 def cmd_board(args) -> int:
     cfg = load_config(args.config or None)
+    _apply_cli_steps(cfg, args)
     if args.host:
         cfg.board.host = args.host
     task_dir, spec, plan = _load_task(args.task)
-    result = run_board(task_dir, spec, cfg, force=args.force)
+    if not cfg.steps.npu:
+        print(
+            json.dumps(
+                {
+                    "status": "skipped",
+                    "host": cfg.board.host,
+                    "reason": "npu step disabled by configuration (steps.npu=false)",
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    command_log = logger_for(
+        task_dir,
+        level=cfg.logging.command_level,
+        echo=cfg.logging.echo_commands,
+    )
+    result = run_board(
+        task_dir, spec, cfg, force=args.force, command_log=command_log
+    )
     print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
     return 0 if result.status in ("passed", "skipped") else 1
 
@@ -354,6 +435,53 @@ def _workload_selector(value: str):
         return value
 
 
+def _add_step_args(p, *, board: bool = False) -> None:
+    p.add_argument(
+        "--compile",
+        dest="step_compile",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="enable/disable the device-compile step (overrides config steps.compile)",
+    )
+    p.add_argument(
+        "--simulate",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="enable/disable the simulation step (overrides config steps.simulate)",
+    )
+    p.add_argument(
+        "--npu",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="enable/disable direct NPU/board execution (overrides config steps.npu)",
+    )
+    p.add_argument(
+        "--profile",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="enable/disable pipeline profiling after precision passes",
+    )
+    if board:
+        p.add_argument(
+            "--board",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help="force/skip board execution (default: auto when board.host is set)",
+        )
+    p.add_argument(
+        "--command-log-level",
+        default=None,
+        choices=["off", "error", "warn", "info", "debug"],
+        help="command log verbosity (writes commands.log)",
+    )
+    p.add_argument(
+        "--command-log-echo",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="also echo full command lines to stderr",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="aiop", description="Ascend A5 TileLang operator generation agent")
     parser.add_argument("--config", default="")
@@ -379,8 +507,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--search", action="store_true", help="bounded plan search before generation")
     p.add_argument("--search-budget", type=int, default=4, help="number of candidate plans to gate")
     p.add_argument("--no-progress", action="store_true", help="do not stream stage progress to stderr")
-    p.add_argument("--simulate", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--board", action="store_true")
+    _add_step_args(p, board=True)
     p.add_argument("--force-board", action="store_true")
     p.add_argument("--reuse", action="store_true")
     p.add_argument("--json", action="store_true")
@@ -405,8 +532,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--search", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--search-budget", type=int, default=4)
     p.add_argument("--no-progress", action="store_true", help="do not stream stage progress to stderr")
-    p.add_argument("--simulate", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--board", action="store_true")
+    _add_step_args(p, board=True)
     p.add_argument("--out", default="", help="optional campaign report path")
     p.set_defaults(func=cmd_campaign)
 
@@ -433,16 +559,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("compile", help="lower + device compile an existing task")
     p.add_argument("task")
+    p.add_argument("--command-log-level", default=None, choices=["off", "error", "warn", "info", "debug"])
+    p.add_argument("--command-log-echo", action=argparse.BooleanOptionalAction, default=None)
     p.set_defaults(func=cmd_compile)
 
     p = sub.add_parser("simulate", help="run L3 simulation for an existing task")
     p.add_argument("task")
+    p.add_argument("--command-log-level", default=None, choices=["off", "error", "warn", "info", "debug"])
+    p.add_argument("--command-log-echo", action=argparse.BooleanOptionalAction, default=None)
     p.set_defaults(func=cmd_simulate)
 
     p = sub.add_parser("board", help="run L4 board measurement for an existing task")
     p.add_argument("task")
     p.add_argument("--host", default="")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--profile", action=argparse.BooleanOptionalAction, default=None)
+    p.add_argument("--command-log-level", default=None, choices=["off", "error", "warn", "info", "debug"])
+    p.add_argument("--command-log-echo", action=argparse.BooleanOptionalAction, default=None)
     p.set_defaults(func=cmd_board)
 
     p = sub.add_parser("search", help="search the A5 knowledge base")
@@ -490,7 +623,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except ConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
