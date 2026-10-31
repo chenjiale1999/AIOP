@@ -61,17 +61,18 @@ def compile_kernel(module_path: Path, workdir: Path, cfg: Config, timeout: int |
     started = time.time()
     out_json = workdir / "compile_result.json"
     env = os.environ.copy()
-    repo = str(Path(cfg.paths.tilelang_repo))
+    repo = str(cfg.paths.tilelang_repo or "")
     pythonpath = [str(PROJECT_ROOT), repo, env.get("PYTHONPATH", "")]
     env["PYTHONPATH"] = os.pathsep.join([p for p in pythonpath if p])
-    env["ASCEND_HOME_PATH"] = cfg.cann.home
-    env["ASCEND_TOOLKIT_HOME"] = cfg.cann.home
-    for rel in ("bin", "tools/ccec_compiler/bin"):
-        path = str(Path(cfg.cann.home) / rel)
-        env["PATH"] = path + os.pathsep + env.get("PATH", "")
-    for rel in ("lib64", "x86_64-linux/lib64"):
-        path = str(Path(cfg.cann.home) / rel)
-        env["LD_LIBRARY_PATH"] = path + os.pathsep + env.get("LD_LIBRARY_PATH", "")
+    if cfg.cann.home:
+        env["ASCEND_HOME_PATH"] = cfg.cann.home
+        env["ASCEND_TOOLKIT_HOME"] = cfg.cann.home
+        for rel in ("bin", "tools/ccec_compiler/bin"):
+            path = str(Path(cfg.cann.home) / rel)
+            env["PATH"] = path + os.pathsep + env.get("PATH", "")
+        for rel in ("lib64", "x86_64-linux/lib64"):
+            path = str(Path(cfg.cann.home) / rel)
+            env["LD_LIBRARY_PATH"] = path + os.pathsep + env.get("LD_LIBRARY_PATH", "")
     cmd = [
         sys.executable,
         "-m",

@@ -12,7 +12,7 @@ description: >-
   TRACE_START、TRACE_STOP。
 ---
 
-> **aiop 副本说明**：本 skill 复制自 `asc-devkit`（`/home/cjl/workspace/asc-devkit`）。文中相对路径以该仓为根解析；`${DEVKIT_PATH}` 指该仓根目录。重新同步：`scripts/sync_skills.sh`。
+> **aiop 副本说明**：本 skill 复制自 `asc-devkit`（`由 DEVKIT_ROOT 指定的 asc-devkit 仓`）。文中相对路径以该仓为根解析；`${DEVKIT_PATH}` 指该仓根目录。重新同步：`scripts/sync_skills.sh`。
 
 # AscendC API Kernel Debug
 

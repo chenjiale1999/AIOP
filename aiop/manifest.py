@@ -32,9 +32,14 @@ from typing import Any, Iterable
 
 import yaml
 
+from .config import PROJECT_ROOT, discover_manifest_dir
 from .specs import TaskSpec, TensorSpec, normalize_dtype
 
-DEFAULT_MANIFEST_DIR = Path("/home/cjl/workspace/TileOPs/src/tileops/manifest/spec")
+# Resolved lazily: a sibling TileOPs checkout, then the repository's bundled
+# examples/spec copies. No user-specific fixed directory is assumed.
+DEFAULT_MANIFEST_DIR = Path(
+    discover_manifest_dir() or (PROJECT_ROOT / "examples" / "spec")
+)
 
 
 class ManifestError(ValueError):
@@ -89,7 +94,7 @@ FAMILY_LABEL = {
 # loading
 # --------------------------------------------------------------------------
 def manifest_files(source: str | Path | None = None) -> list[Path]:
-    path = Path(source) if source else DEFAULT_MANIFEST_DIR
+    path = Path(source) if source else Path(discover_manifest_dir() or DEFAULT_MANIFEST_DIR)
     files = sorted(path.glob("*.yaml")) if path.is_dir() else [path]
     files = [p for p in files if p.is_file()]
     if not files:

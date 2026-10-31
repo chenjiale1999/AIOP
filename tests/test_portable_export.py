@@ -9,6 +9,7 @@ from pathlib import Path
 import torch
 
 from aiop import cli
+from aiop.config import discover_manifest_dir, discover_tilelang_repo
 from aiop.generation.templates import write_kernel
 from aiop.manifest import bind_operator, load_operator
 from aiop.runtime.hardware import build_plan
@@ -47,8 +48,9 @@ def test_export_writes_single_file_with_embedded_kernel(tmp_path):
     assert "import base64" not in source
     assert "import types" not in source
     assert "linecache" not in source
-    assert 'os.environ.get("AIOP_TILELANG_REPO")' in source
-    assert '"ASCEND_HOME_PATH"' in source
+    assert "AIOP_TILELANG_REPO" in source
+    assert "ASCEND_HOME_PATH" in source
+    assert "/home/" not in source
 
     # No external kernel file may be referenced or imported.
     assert "KERNEL_PATH" not in source
@@ -139,7 +141,7 @@ def test_string_precision_becomes_float_in_exported_test(tmp_path):
 
 
 def test_manifest_export_enumerates_all_shape_dtype_variants(tmp_path):
-    manifest = Path("/home/cjl/workspace/TileOPs/src/tileops/manifest/spec")
+    manifest = Path(discover_manifest_dir())
     if not manifest.is_dir():
         import pytest
 
@@ -178,7 +180,7 @@ def test_manifest_export_enumerates_all_shape_dtype_variants(tmp_path):
         device_flags=[],
         warmup=0,
         repeats=1,
-        tilelang_repo="/home/cjl/workspace/tilelang",
+        tilelang_repo=discover_tilelang_repo(),
         kernel_source=kernel_source,
         variants=variants,
     )
@@ -196,7 +198,7 @@ def test_manifest_export_enumerates_all_shape_dtype_variants(tmp_path):
 
 
 def test_unsupported_manifest_contracts_are_kept_in_case_matrix(tmp_path):
-    manifest = Path("/home/cjl/workspace/TileOPs/src/tileops/manifest/spec")
+    manifest = Path(discover_manifest_dir())
     if not manifest.is_dir():
         import pytest
 
@@ -216,7 +218,7 @@ def test_unsupported_manifest_contracts_are_kept_in_case_matrix(tmp_path):
         device_flags=[],
         warmup=0,
         repeats=1,
-        tilelang_repo="/home/cjl/workspace/tilelang",
+        tilelang_repo=discover_tilelang_repo(),
         kernel_source=kernel_source,
         variants=variants,
     )

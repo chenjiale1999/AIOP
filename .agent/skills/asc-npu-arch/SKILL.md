@@ -3,7 +3,7 @@ name: asc-npu-arch
 description: Ascend NPU 架构知识技能。触发：当用户需要确认芯片型号、NpuArch、SocVersion、__NPU_ARCH__、架构差异、特性支持、API 可用范围或条件编译分支时使用。
 ---
 
-> **aiop 副本说明**：本 skill 复制自 `asc-devkit`（`/home/cjl/workspace/asc-devkit`）。文中相对路径以该仓为根解析；`${DEVKIT_PATH}` 指该仓根目录。重新同步：`scripts/sync_skills.sh`。
+> **aiop 副本说明**：本 skill 复制自 `asc-devkit`（`由 DEVKIT_ROOT 指定的 asc-devkit 仓`）。文中相对路径以该仓为根解析；`${DEVKIT_PATH}` 指该仓根目录。重新同步：`scripts/sync_skills.sh`。
 
 # Ascend NPU 架构知识
 

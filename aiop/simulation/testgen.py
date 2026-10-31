@@ -15,6 +15,7 @@ device compute time, bandwidth, throughput).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -401,13 +402,16 @@ def render_test(
     kernel_text = "\n".join(kernel_blocks).rstrip()
     golden_text = "\n\n".join(golden_blocks).rstrip()
     dtype_text = "\n".join(out_dtype_consts)
+    spec_digest = hashlib.sha256(
+        json.dumps(spec.to_dict(), sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
     return f'''#!/usr/bin/env python3
 """Auto-generated A5 TileLang verification runner (aiop).
 
 task: {spec.name} ({spec.family})
 golden_source: {"llm-self-referenced" if golden_override else "aiop-builtin"}
-spec_sha: {json.dumps(spec.to_dict(), sort_keys=True)}
+spec_sha: {spec_digest}
 
 This file is fully self-contained. Every case declares an explicit `shape` and
 `datatype`; the matching kernel variant, case data, golden reference and
@@ -426,29 +430,46 @@ import statistics
 import sys
 import time
 
-_DEFAULT_TILELANG_REPO_AIOP = {tilelang_repo!r}
-_DEFAULT_CANN_HOME_AIOP = {cfg_dump['cann_home']!r}
+_DEFAULT_TILELANG_REPO_AIOP = ""
+_DEFAULT_CANN_HOME_AIOP = ""
+
+
+def _tilelang_repo_root(path):
+    if not path or not os.path.isdir(path):
+        return ""
+    if os.path.isdir(os.path.join(path, "tilelang", "ascend", "language")):
+        return path
+    if os.path.isdir(os.path.join(path, "ascend", "language")):
+        return os.path.dirname(path)
+    return ""
 
 
 def _discover_tilelang_repo_aiop():
-    value = os.environ.get("AIOP_TILELANG_REPO")
-    if value and os.path.isdir(value):
-        return value
-    if _DEFAULT_TILELANG_REPO_AIOP and os.path.isdir(_DEFAULT_TILELANG_REPO_AIOP):
-        return _DEFAULT_TILELANG_REPO_AIOP
+    for key in ("AIOP_TILELANG_REPO", "TILELANG_REPO"):
+        found = _tilelang_repo_root(os.environ.get(key, ""))
+        if found:
+            return found
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    cwd = os.getcwd()
+    for root in (script_dir, os.path.dirname(script_dir), cwd, os.path.dirname(cwd), os.path.expanduser("~"), "/opt"):
+        found = _tilelang_repo_root(root)
+        if found:
+            return found
     return ""
 
 
 def _discover_cann_home_aiop():
-    for key in ("AIOP_CANN_HOME", "ASCEND_HOME_PATH", "ASCEND_TOOLKIT_HOME"):
+    for key in ("AIOP_CANN_HOME", "ASCEND_HOME_PATH", "ASCEND_TOOLKIT_HOME", "CANN_HOME"):
         value = os.environ.get(key)
         if value and os.path.isdir(value):
             return value
     candidates = [
-        _DEFAULT_CANN_HOME_AIOP,
         "/usr/local/Ascend/ascend-toolkit/latest",
+        "/usr/local/Ascend/latest",
+        os.path.expanduser("~/Ascend/ascend-toolkit/latest"),
     ]
     candidates.extend(sorted(glob.glob("/usr/local/Ascend/cann-*"), reverse=True))
+    candidates.extend(sorted(glob.glob(os.path.expanduser("~/Ascend/cann-*")), reverse=True))
     for candidate in candidates:
         if candidate and os.path.isdir(candidate):
             return candidate

@@ -1,7 +1,7 @@
 # Ascend 专属 OP 参考（A5 / Ascend 后端）
 
 > 本文件由 `scripts/gen_ascend_op_kb.py` 从源码自动生成，请勿手工编辑。
-> 解析目录：`/home/cjl/workspace/tilelang/tilelang/ascend/language`
+> 解析目录：`<tilelang-repo>/tilelang/ascend/language`
 > 覆盖：目录内 158 个公开定义（`T.*` 72 个，`T.simd.*` 86 个）
 > 合法调用面：`tilelang.ascend.language.__all__` 606 项（含再导出的通用面）
 
@@ -3641,7 +3641,7 @@ with T.SimdVF():
 ## 4. 覆盖校验
 
 ```bash
-cd /home/cjl/workspace/aiop
+cd <aiop-repo-root>
 python scripts/gen_ascend_op_kb.py --check
 ```
 

@@ -2,165 +2,571 @@
 """Auto-generated A5 TileLang verification runner (aiop).
 
 task: relu (elementwise_unary)
-spec_sha: {"attrs": {}, "family": "elementwise_unary", "formula": "Y = max(X, 0)", "inputs": [{"dtype": "bfloat16", "name": "X", "shape": [1024, 4096]}], "name": "relu", "notes": "", "outputs": [{"dtype": "bfloat16", "name": "Y", "shape": [1024, 4096]}], "perf": {"metric": "latency", "target": null, "unit": "ms"}, "precision": {"atol": 0.01, "matched_ratio": 0.999, "max_abs_error": 0.1, "rtol": 0.01}, "version": "1"}
+golden_source: aiop-builtin
+spec_sha: df1f0cf665f0f055385c1eafd56cf7916627739c02f85bb0db4fdd1ee0729180
+
+This file is fully self-contained. Every case declares an explicit `shape` and
+`datatype`; the matching kernel variant, case data, golden reference and
+expected-value computation are all inlined. No external kernel module,
+test-data file or baseline file is imported or read.
 
 Usage:
     python test_relu.py [--json result.json] [--device npu] [--warmup 5] [--repeats 20]
 Exit codes: 0 pass, 1 accuracy/runtime failure, 3 environment unavailable.
 """
 import argparse
+import glob
 import json
 import os
+import statistics
 import sys
 import time
 
-TILELANG_REPO = '/home/cjl/workspace/tilelang'
-CANN_HOME = '/usr/local/Ascend/cann-9.2.0'
-DEVICE_FLAGS = ['-D__INTEL_LLVM_COMPILER=1', '-DSYCL_LANGUAGE_VERSION=1']
+_DEFAULT_TILELANG_REPO_AIOP = ""
+_DEFAULT_CANN_HOME_AIOP = ""
 
-if TILELANG_REPO not in sys.path:
-    sys.path.insert(0, TILELANG_REPO)
+
+def _tilelang_repo_root(path):
+    if not path or not os.path.isdir(path):
+        return ""
+    if os.path.isdir(os.path.join(path, "tilelang", "ascend", "language")):
+        return path
+    if os.path.isdir(os.path.join(path, "ascend", "language")):
+        return os.path.dirname(path)
+    return ""
+
+
+def _discover_tilelang_repo_aiop():
+    for key in ("AIOP_TILELANG_REPO", "TILELANG_REPO"):
+        found = _tilelang_repo_root(os.environ.get(key, ""))
+        if found:
+            return found
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    cwd = os.getcwd()
+    for root in (script_dir, os.path.dirname(script_dir), cwd, os.path.dirname(cwd), os.path.expanduser("~"), "/opt"):
+        found = _tilelang_repo_root(root)
+        if found:
+            return found
+    return ""
+
+
+def _discover_cann_home_aiop():
+    for key in ("AIOP_CANN_HOME", "ASCEND_HOME_PATH", "ASCEND_TOOLKIT_HOME", "CANN_HOME"):
+        value = os.environ.get(key)
+        if value and os.path.isdir(value):
+            return value
+    candidates = [
+        "/usr/local/Ascend/ascend-toolkit/latest",
+        "/usr/local/Ascend/latest",
+        os.path.expanduser("~/Ascend/ascend-toolkit/latest"),
+    ]
+    candidates.extend(sorted(glob.glob("/usr/local/Ascend/cann-*"), reverse=True))
+    candidates.extend(sorted(glob.glob(os.path.expanduser("~/Ascend/cann-*")), reverse=True))
+    for candidate in candidates:
+        if candidate and os.path.isdir(candidate):
+            return candidate
+    return ""
+
+
+TILELANG_REPO_AIOP = _discover_tilelang_repo_aiop()
+CANN_HOME_AIOP = _discover_cann_home_aiop()
+DEVICE_FLAGS_AIOP = ['-D__INTEL_LLVM_COMPILER=1', '-DSYCL_LANGUAGE_VERSION=1']
+
+if TILELANG_REPO_AIOP and TILELANG_REPO_AIOP not in sys.path:
+    sys.path.insert(0, TILELANG_REPO_AIOP)
 sys.meta_path[:] = [f for f in sys.meta_path if type(f).__name__ != "ScikitBuildRedirectingFinder"]
-os.environ.setdefault("ASCEND_HOME_PATH", CANN_HOME)
-os.environ.setdefault("ASCEND_TOOLKIT_HOME", CANN_HOME)
+if CANN_HOME_AIOP:
+    os.environ.setdefault("ASCEND_HOME_PATH", CANN_HOME_AIOP)
+    os.environ.setdefault("ASCEND_TOOLKIT_HOME", CANN_HOME_AIOP)
 
 
-def _prepend(key, value):
+def _prepend_aiop(key, value):
     parts = [p for p in os.environ.get(key, "").split(os.pathsep) if p]
     if value not in parts:
         os.environ[key] = os.pathsep.join([value, *parts])
 
 
-_prepend("PATH", os.path.join(CANN_HOME, "bin"))
-_prepend("PATH", os.path.join(CANN_HOME, "tools", "ccec_compiler", "bin"))
-_prepend("LD_LIBRARY_PATH", os.path.join(CANN_HOME, "lib64"))
-_prepend("LD_LIBRARY_PATH", os.path.join(CANN_HOME, "x86_64-linux", "lib64"))
+if CANN_HOME_AIOP:
+    _prepend_aiop("PATH", os.path.join(CANN_HOME_AIOP, "bin"))
+    _prepend_aiop("PATH", os.path.join(CANN_HOME_AIOP, "tools", "ccec_compiler", "bin"))
+    _prepend_aiop("LD_LIBRARY_PATH", os.path.join(CANN_HOME_AIOP, "lib64"))
+    _prepend_aiop("LD_LIBRARY_PATH", os.path.join(CANN_HOME_AIOP, "x86_64-linux", "lib64"))
 
 
 import torch
 
 try:
     import torch_npu  # noqa: F401
-    HAS_NPU = bool(torch.npu.is_available())
+    HAS_NPU_AIOP = bool(torch.npu.is_available())
 except Exception as exc:  # noqa: BLE001
-    HAS_NPU = False
-    NPU_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+    HAS_NPU_AIOP = False
+    NPU_IMPORT_ERROR_AIOP = f"{type(exc).__name__}: {exc}"
 else:
-    NPU_IMPORT_ERROR = ""
+    NPU_IMPORT_ERROR_AIOP = ""
 
 import tilelang
-import importlib.util
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-KERNEL_PATH = os.path.join(HERE, "relu.py")
-spec = importlib.util.spec_from_file_location("kernel_relu", KERNEL_PATH)
-kernel_mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(kernel_mod)
+# ===================== embedded kernel variants =====================
+# ---- kernel variant 0: workload=-1 dtype_case=-1 (task-bound, bfloat16) ----
+"""A5 TileLang operator generated by aiop.
 
-ATOL = 0.01
-RTOL = 0.01
-MAX_ABS = 0.1
-REQUIRED_RATIO = 0.999
-OUT_DTYPE = torch.bfloat16
+op: relu
+family: elementwise_unary
+plan: {"block_k": 0, "block_m": 0, "block_n": 0, "blocks": 64, "buffer_bytes": {"tile0": 32768, "tile1": 32768}, "epilogue": "none", "family": "elementwise_unary", "iterations": 8, "num_stages": 2, "rows": 0, "tail_mode": "exact", "threads": 256, "tile": 8192, "tile_extent": 0, "variant": "simt_ub_staged"}
+source: deterministic template elementwise (knowledge/04, knowledge/06)
+"""
 
+# fmt: off
+import tilelang
+import tilelang.ascend.language as T
 
-def make_inputs(device):
-    X = torch.randn((1024, 4096), dtype=torch.bfloat16)
-    return [t.to(device) for t in [X]]
+PASS_CONFIGS = {}
 
 
-def golden(X):
+def build_0():
+    N = 4194304
+    TILE = 8192
+    BLOCKS = 64
+    THREADS = 256
+    NUM_STAGES = 2
+    ITERS = 8
+
+    @T.prim_func
+    def main(X: T.Tensor((4194304,), "bfloat16"), Y: T.Tensor((4194304,), "bfloat16")):
+        with T.Kernel(BLOCKS) as bx:
+            a = T.alloc_shared((TILE,), "bfloat16")
+            c = T.alloc_shared((TILE,), "bfloat16")
+            T.annotate_buffer_versions({a: NUM_STAGES, c: NUM_STAGES})
+            for step in T.Pipelined(ITERS, num_stages=NUM_STAGES):
+                begin = (step * BLOCKS + bx) * TILE
+                T.copy(X[begin : begin + TILE], a)
+                with T.SimtVF(threads=THREADS):
+                    for i in T.Parallel(TILE):
+                        c[i] = T.cast(T.max(T.cast(a[i], T.float32), T.float32(0)), "bfloat16")
+                T.copy(c, Y[begin : begin + TILE])
+
+    return main
+# =================== end kernel variants ===================
+
+DTYPE_TO_TORCH_AIOP = {
+    'float32': torch.float32,
+    'float16': torch.float16,
+    'bfloat16': torch.bfloat16,
+    'int8': torch.int8,
+    'int16': torch.int16,
+    'int32': torch.int32,
+    'uint8': torch.uint8,
+    'uint16': torch.uint16,
+    'bool': torch.bool,
+}
+INT_DTYPES_AIOP = {"int8", "int16", "int32", "uint8", "uint16"}
+
+OUT_DTYPE_AIOP_0 = torch.bfloat16
+
+CASE_SPECS_AIOP = [{'shape': [[1024, 4096]],
+  'datatype': ['bfloat16'],
+  'inputs': [{'name': 'X', 'shape': [1024, 4096], 'dtype': 'bfloat16'}],
+  'output': {'name': 'Y', 'shape': [1024, 4096], 'dtype': 'bfloat16'},
+  'denom_index': None,
+  'positive': False,
+  'reshape': 'flat',
+  'reshape_d': 0,
+  'kernel': 'build_0',
+  'golden': 'golden_aiop_0',
+  'precision': {'atol': 0.01, 'rtol': 0.01, 'max_abs_error': 0.1, 'matched_ratio': 0.999},
+  'bytes': 16777216,
+  'flops': 8388608,
+  'elements': 4194304,
+  'workload': -1,
+  'dtype_case': -1,
+  'workload_label': 'task-bound',
+  'name': 'normal',
+  'kind': 'as_is'},
+ {'shape': [[1024, 4096]],
+  'datatype': ['bfloat16'],
+  'inputs': [{'name': 'X', 'shape': [1024, 4096], 'dtype': 'bfloat16'}],
+  'output': {'name': 'Y', 'shape': [1024, 4096], 'dtype': 'bfloat16'},
+  'denom_index': None,
+  'positive': False,
+  'reshape': 'flat',
+  'reshape_d': 0,
+  'kernel': 'build_0',
+  'golden': 'golden_aiop_0',
+  'precision': {'atol': 0.01, 'rtol': 0.01, 'max_abs_error': 0.1, 'matched_ratio': 0.999},
+  'bytes': 16777216,
+  'flops': 8388608,
+  'elements': 4194304,
+  'workload': -1,
+  'dtype_case': -1,
+  'workload_label': 'task-bound',
+  'name': 'zeros',
+  'kind': 'zeros'},
+ {'shape': [[1024, 4096]],
+  'datatype': ['bfloat16'],
+  'inputs': [{'name': 'X', 'shape': [1024, 4096], 'dtype': 'bfloat16'}],
+  'output': {'name': 'Y', 'shape': [1024, 4096], 'dtype': 'bfloat16'},
+  'denom_index': None,
+  'positive': False,
+  'reshape': 'flat',
+  'reshape_d': 0,
+  'kernel': 'build_0',
+  'golden': 'golden_aiop_0',
+  'precision': {'atol': 0.01, 'rtol': 0.01, 'max_abs_error': 0.1, 'matched_ratio': 0.999},
+  'bytes': 16777216,
+  'flops': 8388608,
+  'elements': 4194304,
+  'workload': -1,
+  'dtype_case': -1,
+  'workload_label': 'task-bound',
+  'name': 'ones',
+  'kind': 'ones'},
+ {'shape': [[1024, 4096]],
+  'datatype': ['bfloat16'],
+  'inputs': [{'name': 'X', 'shape': [1024, 4096], 'dtype': 'bfloat16'}],
+  'output': {'name': 'Y', 'shape': [1024, 4096], 'dtype': 'bfloat16'},
+  'denom_index': None,
+  'positive': False,
+  'reshape': 'flat',
+  'reshape_d': 0,
+  'kernel': 'build_0',
+  'golden': 'golden_aiop_0',
+  'precision': {'atol': 0.01, 'rtol': 0.01, 'max_abs_error': 0.1, 'matched_ratio': 0.999},
+  'bytes': 16777216,
+  'flops': 8388608,
+  'elements': 4194304,
+  'workload': -1,
+  'dtype_case': -1,
+  'workload_label': 'task-bound',
+  'name': 'large',
+  'kind': 'scale',
+  'scale': 100.0},
+ {'shape': [[1024, 4096]],
+  'datatype': ['bfloat16'],
+  'inputs': [{'name': 'X', 'shape': [1024, 4096], 'dtype': 'bfloat16'}],
+  'output': {'name': 'Y', 'shape': [1024, 4096], 'dtype': 'bfloat16'},
+  'denom_index': None,
+  'positive': False,
+  'reshape': 'flat',
+  'reshape_d': 0,
+  'kernel': 'build_0',
+  'golden': 'golden_aiop_0',
+  'precision': {'atol': 0.01, 'rtol': 0.01, 'max_abs_error': 0.1, 'matched_ratio': 0.999},
+  'bytes': 16777216,
+  'flops': 8388608,
+  'elements': 4194304,
+  'workload': -1,
+  'dtype_case': -1,
+  'workload_label': 'task-bound',
+  'name': 'tiny',
+  'kind': 'scale',
+  'scale': 0.001}]
+
+UNSUPPORTED_CONTRACTS_AIOP = []
+
+COVERAGE_AIOP = {'declared': 1,
+ 'executable': 1,
+ 'keys': ['{"datatype": ["bfloat16"], "shape": [[1024, 4096]]}'],
+ 'executable_keys': ['{"datatype": ["bfloat16"], "shape": [[1024, 4096]]}']}
+
+SYNC_AIOP = False
+
+
+def golden_aiop_0(X):
     cpu = [t.detach().float().cpu() if t.is_floating_point() else t.detach().cpu() for t in [X]]
     x = cpu[0]
-    
-    return torch.relu(x).to(OUT_DTYPE)
+
+    return torch.relu(x).to(OUT_DTYPE_AIOP_0)
 
 
-def compare(actual, expected):
+def _sync_aiop():
+    if SYNC_AIOP:
+        torch.npu.synchronize()
+
+
+def _apply_case_aiop(tensors, case):
+    kind = case.get("kind", "as_is")
+    scale = float(case.get("scale", 1.0))
+    floor = case.get("floor")
+    denom_floor = case.get("denom_floor")
+    denom_index = case.get("denom_index")
+    out = []
+    for index, tensor in enumerate(tensors):
+        if kind == "zeros":
+            tensor = torch.zeros_like(tensor)
+        elif kind == "ones":
+            tensor = torch.ones_like(tensor)
+        elif kind == "scale":
+            tensor = tensor * scale
+        if tensor.is_floating_point():
+            if floor is not None and kind in ("zeros", "scale"):
+                tensor = tensor.abs() + float(floor)
+            if denom_floor is not None and denom_index is not None and index == int(denom_index):
+                tensor = tensor.abs() + float(denom_floor)
+        out.append(tensor)
+    return out
+
+
+def make_inputs_aiop(case, device):
+    tensors = []
+    positive = bool(case.get("positive"))
+    denom_index = case.get("denom_index")
+    for index, item in enumerate(case["inputs"]):
+        shape = tuple(int(v) for v in item["shape"])
+        dtype = item["dtype"]
+        torch_dtype = DTYPE_TO_TORCH_AIOP[dtype]
+        if dtype in INT_DTYPES_AIOP:
+            tensor = torch.randint(-8, 8, shape, dtype=torch_dtype)
+        elif dtype == "bool":
+            tensor = torch.randint(0, 2, shape, dtype=torch.int8).bool()
+        elif positive:
+            tensor = torch.rand(shape, dtype=torch_dtype) * 2.0 + 0.1
+        elif denom_index is not None and index == int(denom_index):
+            tensor = torch.rand(shape, dtype=torch_dtype) * 2.0 + 0.5
+        else:
+            tensor = torch.randn(shape, dtype=torch_dtype)
+        tensors.append(tensor)
+    tensors = _apply_case_aiop(tensors, case)
+    return [t.to(device) for t in tensors]
+
+
+def _reshape_inputs_aiop(inputs, case):
+    mode = case.get("reshape")
+    if mode == "flat":
+        return [t.reshape(-1) for t in inputs]
+    if mode == "rows":
+        rows = int(case["reshape_d"])
+        return [inputs[0].reshape(-1, rows)] + list(inputs[1:])
+    return inputs
+
+
+def compare_aiop(actual, expected, precision):
     a = actual.detach().float().cpu().reshape(-1)
     e = expected.detach().float().cpu().reshape(-1)
     if a.numel() != e.numel():
-        return {"passed": False, "error": f"size mismatch {a.numel()} vs {e.numel()}"}
+        return {
+            "passed": False,
+            "error": f"size mismatch {a.numel()} vs {e.numel()}",
+            "total_elements": int(a.numel()),
+        }
     diff = (a - e).abs()
     denom = e.abs()
-    tol = ATOL + RTOL * denom
+    tol = float(precision["atol"]) + float(precision["rtol"]) * denom
     matched = (diff <= tol) | (torch.isnan(a) & torch.isnan(e))
-    matched_ratio = float(matched.float().mean().item())
-    max_abs = float(diff.nan_to_num(posinf=1e30).max().item()) if diff.numel() else 0.0
+    matched_ratio = float(matched.float().mean().item()) if diff.numel() else 1.0
+    finite = diff.nan_to_num(posinf=1e30)
+    rel = diff / denom.clamp_min(1e-12)
+    rel = rel.nan_to_num(posinf=1e30)
+    total = int(diff.numel())
     return {
-        "passed": bool(matched_ratio >= REQUIRED_RATIO and max_abs <= MAX_ABS),
-        "max_abs_error": max_abs,
+        "passed": bool(
+            matched_ratio >= float(precision["matched_ratio"])
+            and float(finite.max().item()) <= float(precision["max_abs_error"])
+        ),
+        "max_abs_error": float(finite.max().item()) if total else 0.0,
+        "mean_abs_error": float(finite.mean().item()) if total else 0.0,
+        "max_rel_error": float(rel.max().item()) if total else 0.0,
+        "mean_rel_error": float(rel.mean().item()) if total else 0.0,
         "matched_ratio": matched_ratio,
+        "mismatched_elements": int((~matched).sum().item()) if total else 0,
+        "total_elements": total,
     }
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--json", default="")
-    ap.add_argument("--device", default="npu", choices=["npu", "cpu"])
-    ap.add_argument("--warmup", type=int, default=5)
-    ap.add_argument("--repeats", type=int, default=20)
-    args = ap.parse_args()
-    result = {"task": "relu", "device": args.device, "status": "error"}
+def measure_aiop(kernel, inputs, case, warmup, repeats):
+    for _ in range(max(0, warmup)):
+        kernel(*inputs)
+    _sync_aiop()
+    wall = []
+    device = []
+    for _ in range(max(1, repeats)):
+        _sync_aiop()
+        started = time.perf_counter()
+        if SYNC_AIOP:
+            start_event = torch.npu.Event(enable_timing=True)
+            end_event = torch.npu.Event(enable_timing=True)
+            start_event.record()
+            kernel(*inputs)
+            end_event.record()
+            _sync_aiop()
+            device.append(float(start_event.elapsed_time(end_event)))
+        else:
+            kernel(*inputs)
+            _sync_aiop()
+        wall.append((time.perf_counter() - started) * 1000.0)
+    wall.sort()
+    latency = wall[len(wall) // 2]
+    compute = sorted(device)[len(device) // 2] if device else latency
+    seconds = max(latency, 1e-9) / 1000.0
+    compute_seconds = max(compute, 1e-9) / 1000.0
+    bytes_total = float(case.get("bytes", 0))
+    flops = float(case.get("flops", 0))
+    elements = float(case.get("elements", 0))
+    return {
+        "latency_ms": latency,
+        "compute_ms": compute,
+        "bandwidth_gbps": bytes_total / seconds / 1e9,
+        "throughput_gflops": flops / compute_seconds / 1e9,
+        "throughput_melems_s": elements / seconds / 1e6,
+        "bytes": int(bytes_total),
+        "flops": int(flops),
+        "samples": len(wall),
+    }
 
-    if args.device == "npu" and not HAS_NPU:
-        result.update(status="unavailable", error="torch_npu unavailable: " + (NPU_IMPORT_ERROR or "device not visible"))
+
+def _case_key_aiop(case):
+    return json.dumps(
+        {"shape": case.get("shape"), "datatype": case.get("datatype")},
+        sort_keys=True,
+    )
+
+
+def main_aiop():
+    global SYNC_AIOP
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--json", default="")
+    parser.add_argument("--device", default="npu", choices=["npu", "cpu"])
+    parser.add_argument("--warmup", type=int, default=5)
+    parser.add_argument("--repeats", type=int, default=20)
+    args = parser.parse_args()
+    SYNC_AIOP = args.device == "npu"
+
+    result = {
+        "task": "relu",
+        "device": args.device,
+        "status": "error",
+        "coverage": {
+            "declared": COVERAGE_AIOP["declared"],
+            "executable": COVERAGE_AIOP["executable"],
+            "executed": 0,
+            "ratio": 0.0,
+            "complete": False,
+            "missing": list(COVERAGE_AIOP["keys"]),
+            "unsupported": len(UNSUPPORTED_CONTRACTS_AIOP),
+        },
+        "cases": [],
+    }
+
+    if args.device == "npu" and not HAS_NPU_AIOP:
+        result.update(
+            status="unavailable",
+            error="torch_npu unavailable: " + (NPU_IMPORT_ERROR_AIOP or "device not visible"),
+        )
     else:
-        try:
-            if args.device == "npu":
-                torch.npu.set_device(0)
-            inputs = make_inputs(args.device)
-            raw_inputs = inputs
-            if True:
-                inputs = [t.reshape(-1) for t in inputs]
-            expected = golden(*[t.cpu() for t in raw_inputs])
-            kernel = tilelang.compile(
-                kernel_mod.build(), target="ascend", out_idx=-1,
-                pass_configs={"tl.device_compile_flags": DEVICE_FLAGS},
+        if args.device == "npu":
+            torch.npu.set_device(0)
+        compiled = {}
+        case_results = []
+        for case in CASE_SPECS_AIOP:
+            entry = {
+                "name": case["name"],
+                "shape": case["shape"],
+                "datatype": case["datatype"],
+                "kernel": case.get("kernel"),
+                "status": "error",
+            }
+            if not case.get("available", True):
+                entry.update(status="unsupported", error=case.get("error", "kernel variant unavailable"))
+                case_results.append(entry)
+                continue
+            try:
+                build_name = case["kernel"]
+                if build_name not in compiled:
+                    compiled[build_name] = tilelang.compile(
+                        globals()[build_name](),
+                        target="ascend",
+                        out_idx=-1,
+                        pass_configs={"tl.device_compile_flags": DEVICE_FLAGS_AIOP},
+                    )
+                kernel = compiled[build_name]
+                inputs = make_inputs_aiop(case, args.device)
+                expected = globals()[case["golden"]](*[t.cpu() for t in inputs])
+                kernel_inputs = _reshape_inputs_aiop(inputs, case)
+                with torch.no_grad():
+                    outputs = kernel(*kernel_inputs)
+                    _sync_aiop()
+                outputs = outputs.reshape(expected.shape)
+                precision = compare_aiop(outputs, expected, case["precision"])
+                performance = measure_aiop(
+                    kernel, kernel_inputs, case, args.warmup, args.repeats
+                )
+                entry.update(
+                    status="passed" if precision.get("passed") else "failed",
+                    precision=precision,
+                    performance=performance,
+                )
+            except Exception as exc:  # noqa: BLE001
+                import traceback
+                entry.update(
+                    status="error",
+                    error=f"{type(exc).__name__}: {exc}",
+                    traceback=traceback.format_exc()[-3000:],
+                )
+            case_results.append(entry)
+
+        result["cases"] = case_results
+        executed = set()
+        for entry in case_results:
+            if entry["status"] in ("passed", "failed"):
+                executed.add(_case_key_aiop(entry))
+        declared = set(COVERAGE_AIOP["keys"])
+        missing = [key for key in COVERAGE_AIOP["keys"] if key not in executed]
+        ratio = (len(executed & declared) / len(declared)) if declared else 0.0
+        result["coverage"] = {
+            "declared": len(declared),
+            "executable": len(COVERAGE_AIOP["executable_keys"]),
+            "executed": len(executed & declared),
+            "ratio": ratio,
+            "complete": bool(declared) and not missing,
+            "missing": missing,
+            "unsupported": len(UNSUPPORTED_CONTRACTS_AIOP),
+        }
+
+        statuses = [entry["status"] for entry in case_results]
+        precisions = [entry["precision"] for entry in case_results if "precision" in entry]
+        performances = [entry["performance"] for entry in case_results if "performance" in entry]
+        summary = {
+            "total": len(case_results),
+            "passed": statuses.count("passed"),
+            "failed": statuses.count("failed"),
+            "error": statuses.count("error"),
+            "unsupported": statuses.count("unsupported"),
+            "unavailable": statuses.count("unavailable"),
+            "max_abs_error": max((p.get("max_abs_error", 0.0) for p in precisions), default=0.0),
+            "mean_abs_error": (
+                sum(p.get("mean_abs_error", 0.0) for p in precisions) / len(precisions)
+                if precisions else 0.0
+            ),
+            "matched_ratio": min((p.get("matched_ratio", 0.0) for p in precisions), default=0.0),
+            "latency_ms": statistics.median([p["latency_ms"] for p in performances]) if performances else 0.0,
+            "compute_ms": statistics.median([p["compute_ms"] for p in performances]) if performances else 0.0,
+            "bandwidth_gbps": statistics.median([p["bandwidth_gbps"] for p in performances]) if performances else 0.0,
+            "throughput_gflops": statistics.median([p["throughput_gflops"] for p in performances]) if performances else 0.0,
+        }
+        result["summary"] = summary
+        result["latency_ms"] = summary["latency_ms"]
+        result["max_abs_error"] = summary["max_abs_error"]
+        result["matched_ratio"] = summary["matched_ratio"]
+        executable_statuses = [s for s in statuses if s != "unsupported"]
+        if not executable_statuses:
+            result["status"] = "failed"
+            result["error"] = "no executable cases for this task"
+        else:
+            result["status"] = (
+                "passed" if all(s == "passed" for s in executable_statuses) else "failed"
             )
-            with torch.no_grad():
-                outputs = kernel(*inputs)
-                if args.device == "npu":
-                    torch.npu.synchronize()
-            outputs = outputs.reshape(expected.shape)
-            acc = compare(outputs, expected)
-            result.update(acc)
-            if acc.get("passed"):
-                for _ in range(max(0, args.warmup)):
-                    kernel(*inputs)
-                if args.device == "npu":
-                    torch.npu.synchronize()
-                times = []
-                for _ in range(max(1, args.repeats)):
-                    torch.npu.synchronize() if args.device == "npu" else None
-                    t0 = time.perf_counter()
-                    kernel(*inputs)
-                    torch.npu.synchronize() if args.device == "npu" else None
-                    times.append((time.perf_counter() - t0) * 1000.0)
-                times.sort()
-                result["latency_ms"] = times[len(times) // 2]
-                result["p90_ms"] = times[min(len(times) - 1, int(len(times) * 0.9))]
-                result["min_ms"] = times[0]
-                result["samples"] = len(times)
-                result["status"] = "passed"
-            else:
-                result["status"] = "failed"
-        except Exception as exc:  # noqa: BLE001
-            import traceback
-            result.update(status="error", error=f"{type(exc).__name__}: {exc}", traceback=traceback.format_exc()[-4000:])
 
     if result["status"] == "unavailable":
         print("[PRECISION_UNAVAILABLE]")
     else:
-        print("[PRECISION_PASS]" if result.get("passed") else "[PRECISION_FAIL]")
+        print("[PRECISION_PASS]" if result.get("status") == "passed" else "[PRECISION_FAIL]")
     print(json.dumps(result, indent=2))
     if args.json:
         with open(args.json, "w", encoding="utf-8") as fh:
             json.dump(result, fh, indent=2)
     if result["status"] == "unavailable":
         return 3
-    return 0 if result.get("passed") else 1
+    return 0 if result.get("status") == "passed" else 1
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main_aiop())

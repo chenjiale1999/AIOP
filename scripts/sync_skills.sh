@@ -5,16 +5,16 @@
 #   bash scripts/sync_skills.sh tilelang-ascend # 只同步指定 skill
 set -euo pipefail
 
-TILELANG_ROOT="${TILELANG_ROOT:-/home/cjl/workspace/tilelang}"
-DEVKIT_ROOT="${DEVKIT_ROOT:-/home/cjl/workspace/asc-devkit}"
 AIO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TILELANG_ROOT="${TILELANG_ROOT:-${AIOP_TILELANG_REPO:-$AIO_ROOT/../tilelang}}"
+DEVKIT_ROOT="${DEVKIT_ROOT:-$AIO_ROOT/../asc-devkit}"
 DEST="$AIO_ROOT/.agent/skills"
 
 ASC_SKILLS=(asc-npu-arch asc-search ascendc-api-kernel-debug)
 TL_SKILLS=(tilelang-ascend tilelang-layout tilelang-semantic tilelang-build)
 
-ASC_NOTE='> **aiop 副本说明**：本 skill 复制自 `asc-devkit`（`/home/cjl/workspace/asc-devkit`）。文中相对路径以该仓为根解析；`${DEVKIT_PATH}` 指该仓根目录。重新同步：`scripts/sync_skills.sh`。'
-TL_NOTE='> **aiop 副本说明**：本 skill 复制自 `tilelang`（`/home/cjl/workspace/tilelang`）。文中 `../../..` 相对路径以该仓为根解析，`examples/`、`testing/`、`docs/` 均指该仓目录。重新同步：`scripts/sync_skills.sh`。'
+ASC_NOTE="> **aiop 副本说明**：本 skill 复制自 \`asc-devkit\`（\`${DEVKIT_ROOT}\`）。文中相对路径以该仓为根解析；\`\${DEVKIT_PATH}\` 指该仓根目录。重新同步：\`scripts/sync_skills.sh\`。"
+TL_NOTE="> **aiop 副本说明**：本 skill 复制自 \`tilelang\`（\`${TILELANG_ROOT}\`）。文中 \`../../..\` 相对路径以该仓为根解析，\`examples/\`、\`testing/\`、\`docs/\` 均指该仓目录。重新同步：\`scripts/sync_skills.sh\`。"
 
 insert_note() {
   python3 - "$1" "$2" <<'PY'

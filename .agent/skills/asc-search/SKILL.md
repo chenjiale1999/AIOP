@@ -3,7 +3,7 @@ name: asc-search
 description: OKF 用户侧入口：把 Ascend C API 文档的三类头建立为按适用条件筛选的持久索引，并按算子需求检索候选接口文档。用户需要建索引/检查索引新鲜度、询问“用哪个接口/怎么找 API/某接口配什么用/哪个版本可用”时使用；写头、改词表、标注文档请用 asc-knowledge-create。
 ---
 
-> **aiop 副本说明**：本 skill 复制自 `asc-devkit`（`/home/cjl/workspace/asc-devkit`）。文中相对路径以该仓为根解析；`${DEVKIT_PATH}` 指该仓根目录。重新同步：`scripts/sync_skills.sh`。
+> **aiop 副本说明**：本 skill 复制自 `asc-devkit`（`由 DEVKIT_ROOT 指定的 asc-devkit 仓`）。文中相对路径以该仓为根解析；`${DEVKIT_PATH}` 指该仓根目录。重新同步：`scripts/sync_skills.sh`。
 
 # OKF 索引与检索（asc-search）
 

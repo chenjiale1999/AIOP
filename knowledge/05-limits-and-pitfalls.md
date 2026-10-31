@@ -23,7 +23,7 @@
 ## 2. 向量化拒绝点（P2/P3 polyhedral 路径）
 
 完整 40 条逐条契约见
-`/home/cjl/workspace/tilelang/docs/compiler_internals/p2_unsupported_catalog.md`
+`<tilelang-repo>/docs/compiler_internals/p2_unsupported_catalog.md`
 （`plan.py` 21 / `value.py` 9 / `body.py` 5 / `emit.py` 4 / `access.py` 1）。
 
 **适用范围**：这些拒绝点属于 `AscendPolyhedralVectorize` 这一条 lowering 路径；只有被它接管的

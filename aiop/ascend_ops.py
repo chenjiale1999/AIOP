@@ -218,9 +218,22 @@ def _latest_mtimes(root: Path) -> tuple[float, ...]:
 
 def load_scope(cfg, root: str | Path | None = None, *, prefer_runtime: bool = True) -> OpScope:
     """Build (and cache) the legal op scope for the configured tilelang repo."""
+    from .config import discover_tilelang_repo
     from .runtime import tilelang_a5
 
-    language_dir = Path(root) if root is not None else Path(cfg.paths.tilelang_repo) / "tilelang" / "ascend" / "language"
+    if root is not None:
+        language_dir = Path(root)
+    else:
+        repo = discover_tilelang_repo() or str(cfg.paths.tilelang_repo or "")
+        if repo:
+            language_dir = Path(repo) / "tilelang" / "ascend" / "language"
+        else:
+            try:
+                import tilelang
+
+                language_dir = Path(tilelang.__file__).resolve().parent / "ascend" / "language"
+            except Exception:  # noqa: BLE001 - reported below
+                language_dir = Path("tilelang") / "ascend" / "language"
     if not language_dir.is_dir():
         raise FileNotFoundError(f"Ascend dialect directory not found: {language_dir}")
     key = (str(language_dir.resolve()), _latest_mtimes(language_dir))

@@ -256,7 +256,10 @@ def cmd_env(args) -> int:
     cfg = load_config(args.config or None)
     data = environment_probe(cfg)
     if args.probe_compile:
-        data["compile_probe"] = compile_probe(cfg)
+        try:
+            data["compile_probe"] = compile_probe(cfg)
+        except Exception as exc:  # noqa: BLE001 - report, never crash the probe
+            data["compile_probe"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     print(json.dumps(data, indent=2, ensure_ascii=False))
     return 0
 

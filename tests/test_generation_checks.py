@@ -3,7 +3,7 @@ import ast
 import pytest
 
 from aiop.checks.static import check_api, check_semantics, check_syntax
-from aiop.config import load_config
+from aiop.config import discover_cann_home, discover_tilelang_repo, load_config
 from aiop.generation.templates import render, write_kernel
 from aiop.runtime.hardware import build_plan
 from aiop.simulation.testgen import write_test
@@ -84,11 +84,11 @@ def test_test_script_is_self_contained(tmp_path):
         spec,
         plan,
         tmp_path,
-        cann_home="/usr/local/Ascend/cann-9.2.0",
+        cann_home=discover_cann_home(),
         device_flags=["-D__INTEL_LLVM_COMPILER=1"],
         warmup=1,
         repeats=1,
-        tilelang_repo="/home/cjl/workspace/tilelang",
+        tilelang_repo=discover_tilelang_repo(),
     )
     source = test.read_text(encoding="utf-8")
     ast.parse(source)
@@ -106,11 +106,11 @@ def test_generated_golden_executes_on_cpu(spec, tmp_path):
         spec,
         plan,
         tmp_path,
-        cann_home="/usr/local/Ascend/cann-9.2.0",
+        cann_home=discover_cann_home(),
         device_flags=[],
         warmup=0,
         repeats=1,
-        tilelang_repo="/home/cjl/workspace/tilelang",
+        tilelang_repo=discover_tilelang_repo(),
     )
     module_spec = importlib.util.spec_from_file_location(f"runner_{spec.name}_{spec.family}", test)
     module = importlib.util.module_from_spec(module_spec)

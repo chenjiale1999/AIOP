@@ -9,6 +9,7 @@ import tilelang.
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import os
 import sys
@@ -16,10 +17,27 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ..config import Config
+from ..config import Config, discover_tilelang_repo
 
 _BOOTSTRAPPED = False
 _TILELANG = None
+
+
+def _tilelang_repo(cfg: Config) -> str:
+    value = str(cfg.paths.tilelang_repo or "").strip()
+    if value:
+        candidate = Path(value).expanduser()
+        if (candidate / "tilelang").is_dir():
+            return str(candidate.resolve())
+    return discover_tilelang_repo()
+
+
+def _has_ascend_language() -> bool:
+    try:
+        importlib.import_module("tilelang.ascend.language")
+        return True
+    except Exception:  # noqa: BLE001 - probing
+        return False
 
 
 def _prepend_path(key: str, value: str) -> None:
@@ -31,8 +49,8 @@ def _prepend_path(key: str, value: str) -> None:
 
 
 def setup_ascend_env(cfg: Config) -> None:
-    home = Path(cfg.cann.home)
-    if home.is_dir():
+    home = Path(cfg.cann.home) if cfg.cann.home else None
+    if home is not None and home.is_dir():
         os.environ["ASCEND_HOME_PATH"] = str(home)
         os.environ["ASCEND_TOOLKIT_HOME"] = str(home)
         for rel in ("bin", "tools/ccec_compiler/bin", "tools/profiler/bin", "tools/mspti/bin"):
@@ -44,13 +62,13 @@ def setup_ascend_env(cfg: Config) -> None:
             candidate = home / rel
             if candidate.is_dir():
                 _prepend_path("LD_LIBRARY_PATH", str(candidate))
-    repo = Path(cfg.paths.tilelang_repo)
-    if repo.is_dir():
-        _prepend_path("PATH", str(repo / "build" / "bin"))
+    repo = _tilelang_repo(cfg)
+    if repo and Path(repo).is_dir():
+        _prepend_path("PATH", str(Path(repo) / "build" / "bin"))
 
 
 def bootstrap(cfg: Config) -> Any:
-    """Import the native A5 tilelang checkout, bypassing editable redirects."""
+    """Import a usable A5 tilelang checkout, bypassing editable redirects."""
     global _BOOTSTRAPPED, _TILELANG
     if _BOOTSTRAPPED and _TILELANG is not None:
         return _TILELANG
@@ -59,27 +77,36 @@ def bootstrap(cfg: Config) -> Any:
     # Keep stdout clean for JSON CLI output; tilelang logs a dev-root warning.
     logging.getLogger("tilelang").setLevel(logging.ERROR)
     setup_ascend_env(cfg)
-    repo = str(Path(cfg.paths.tilelang_repo).resolve())
-    if repo not in sys.path:
+
+    repo = _tilelang_repo(cfg)
+    if repo and repo not in sys.path:
         sys.path.insert(0, repo)
     sys.meta_path[:] = [
         finder
         for finder in sys.meta_path
         if type(finder).__name__ != "ScikitBuildRedirectingFinder"
     ]
+
     existing = sys.modules.get("tilelang")
-    if existing is not None and not str(getattr(existing, "__file__", "")).startswith(repo):
-        # A different checkout was imported first: fail loudly rather than
-        # silently validating against the wrong compiler.
+    if existing is not None and not _has_ascend_language():
+        # A non-A5 checkout was imported first. Reloading native extension
+        # modules would register the same FFI symbols twice, so refuse with an
+        # actionable message instead of comparing paths.
         raise RuntimeError(
-            f"tilelang was already imported from {getattr(existing, '__file__', '?')}; "
-            f"expected the native A5 checkout at {repo}. Start a fresh process."
+            "tilelang was already imported from "
+            f"{getattr(existing, '__file__', '?')} and does not provide "
+            "`tilelang.ascend.language`; start a fresh process with "
+            "AIOP_TILELANG_REPO pointing at an A5 tilelang checkout."
         )
+
     import tilelang  # noqa: F401
 
-    tilelang_path = str(Path(tilelang.__file__).resolve())
-    if not tilelang_path.startswith(repo):
-        raise RuntimeError(f"tilelang resolved to {tilelang_path}, expected {repo}")
+    if not _has_ascend_language():
+        raise RuntimeError(
+            "no usable Ascend A5 tilelang found: expected a checkout or installed "
+            "package providing `tilelang.ascend.language`. Set AIOP_TILELANG_REPO "
+            f"to the checkout root (currently: {repo or '<unset>'})."
+        )
     _BOOTSTRAPPED = True
     _TILELANG = tilelang
     return tilelang
@@ -135,13 +162,15 @@ def build_entry(module: Any, entry: str = "build") -> Any:
 
 def environment_probe(cfg: Config) -> dict[str, Any]:
     """Report what this machine can actually execute (never fake capability)."""
+    cann_home = Path(cfg.cann.home) if cfg.cann.home else None
+    bisheng = (cann_home / "bin" / "bisheng") if cann_home is not None else None
     result: dict[str, Any] = {
         "cann_home": cfg.cann.home,
-        "cann_exists": Path(cfg.cann.home).is_dir(),
-        "bisheng": str(Path(cfg.cann.home) / "bin" / "bisheng"),
-        "bisheng_exists": (Path(cfg.cann.home) / "bin" / "bisheng").is_file(),
+        "cann_exists": bool(cann_home is not None and cann_home.is_dir()),
+        "bisheng": str(bisheng) if bisheng is not None else "",
+        "bisheng_exists": bool(bisheng is not None and bisheng.is_file()),
         "npusim": cfg.npusim_bin,
-        "npusim_exists": Path(cfg.npusim_bin).is_file(),
+        "npusim_exists": bool(cfg.npusim_bin and Path(cfg.npusim_bin).is_file()),
         "torch_npu": False,
         "npu_device": False,
         "tilelang_repo": cfg.paths.tilelang_repo,

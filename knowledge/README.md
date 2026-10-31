@@ -25,8 +25,8 @@ skill 负责**流程与约束**，本知识库负责**事实、速查与骨架**
 
 1. **先骨架后细节**：任何算子需求先到 `04` 找同类模板，避免从零拼 API。
 2. **事实以源码为准**：`02` 是速查，签名与行为以
-   `/home/cjl/workspace/tilelang/tilelang/ascend/language/` 为准；平台事实以
-   `/home/cjl/workspace/tilelang/.agents/skills/asc-npu-arch/references/npu-arch-facts.json`
+   `<tilelang-repo>/tilelang/ascend/language/` 为准；平台事实以
+   `<tilelang-repo>/.agents/skills/asc-npu-arch/references/npu-arch-facts.json`
    为准。
 3. **不确定就查 skill**：`tilelang-ascend` 是编程约束的第一手资料；
    `tilelang-semantic` 说明某个写法为何非法。
@@ -56,11 +56,11 @@ skill 与本文档中的相对路径统一按上游仓根解析：
 
 | 写法 | 实际位置 |
 |---|---|
-| `examples/ascend/...` | `/home/cjl/workspace/tilelang/examples/ascend/...` |
-| `testing/ascend/...` | `/home/cjl/workspace/tilelang/testing/ascend/...` |
-| `docs/...` | `/home/cjl/workspace/tilelang/docs/...` |
-| `tilelang/ascend/language/...` | `/home/cjl/workspace/tilelang/tilelang/ascend/language/...` |
-| `${DEVKIT_PATH}` | `/home/cjl/workspace/asc-devkit` |
+| `examples/ascend/...` | `<tilelang-repo>/examples/ascend/...` |
+| `testing/ascend/...` | `<tilelang-repo>/testing/ascend/...` |
+| `docs/...` | `<tilelang-repo>/docs/...` |
+| `tilelang/ascend/language/...` | `<tilelang-repo>/tilelang/ascend/language/...` |
+| `${DEVKIT_PATH}` | `<asc-devkit-root>` |
 
 ## 维护规则
 

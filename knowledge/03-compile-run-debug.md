@@ -1,7 +1,7 @@
 # 编译、运行、调试
 
 目标：从源码到可执行 kernel 的全部可复现命令，以及失败时的分层定位方法。
-命令均在上游仓根 `/home/cjl/workspace/tilelang` 执行。
+命令均在上游仓根 `<tilelang-repo>` 执行。
 
 ## 1. 环境前置
 

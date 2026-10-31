@@ -132,7 +132,7 @@ emit it in an A5 kernel.
 ## 6. Re-verify
 
 ```bash
-cd /home/cjl/workspace/aiop
+cd <aiop-repo-root>
 python -m aiop check --kernel <file>     # API001/API002/API003
 python - <<'PY'
 import tilelang.ascend.language as T

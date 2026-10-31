@@ -662,7 +662,7 @@ def build_markdown(scope: ascend_ops.OpScope, entries: list[OpDoc]) -> str:
     lines.append("## 4. 覆盖校验")
     lines.append("")
     lines.append("```bash")
-    lines.append("cd /home/cjl/workspace/aiop")
+    lines.append("cd <aiop-repo-root>")
     lines.append("python scripts/gen_ascend_op_kb.py --check")
     lines.append("```")
     lines.append("")

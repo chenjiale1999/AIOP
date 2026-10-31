@@ -128,7 +128,8 @@ def run_simulation(
             str(cfg.simulation.repeats),
         ]
         env = os.environ.copy()
-        env["ASCEND_HOME_PATH"] = cfg.cann.home
+        if cfg.cann.home:
+            env["ASCEND_HOME_PATH"] = cfg.cann.home
         proc = subprocess.run(
             cmd,
             cwd=str(task_dir),
@@ -153,7 +154,8 @@ def run_simulation(
         env = os.environ.copy()
         if site:
             env["PYTHONPATH"] = site + os.pathsep + env.get("PYTHONPATH", "")
-        env["ASCEND_HOME_PATH"] = cfg.cann.home
+        if cfg.cann.home:
+            env["ASCEND_HOME_PATH"] = cfg.cann.home
         proc = subprocess.run(
             cmd,
             cwd=str(task_dir),

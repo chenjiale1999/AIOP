@@ -3,7 +3,7 @@ name: tilelang-layout
 description: Use when working with TileLang layouts — the Layout/Fragment classes, layout inference and its cost model, the CuTe layout algebra and TileLang-to-CuTe conversion, swizzles, or when debugging layout-related passes and their annotations.
 ---
 
-> **aiop 副本说明**：本 skill 复制自 `tilelang`（`/home/cjl/workspace/tilelang`）。文中 `../../..` 相对路径以该仓为根解析，`examples/`、`testing/`、`docs/` 均指该仓目录。重新同步：`scripts/sync_skills.sh`。
+> **aiop 副本说明**：本 skill 复制自 `tilelang`（`由 TILELANG_ROOT 指定的 tilelang 仓`）。文中 `../../..` 相对路径以该仓为根解析，`examples/`、`testing/`、`docs/` 均指该仓目录。重新同步：`scripts/sync_skills.sh`。
 
 # TileLang Layout System
 

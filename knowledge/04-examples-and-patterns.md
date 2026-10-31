@@ -5,7 +5,7 @@
 
 ## 1. 示例地图
 
-目录：`/home/cjl/workspace/tilelang/examples/ascend/`
+目录：`<tilelang-repo>/examples/ascend/`
 
 | 文件 | 算子 | 教学重点 |
 |---|---|---|

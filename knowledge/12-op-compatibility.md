@@ -1,7 +1,7 @@
 # OP 兼容性与 A3→A5 迁移清单
 
 本文是 aiop 的 OP 标准化基线：记录 A3（`tilelang_ascend`）专属语法 OP 与
-A5 主仓（`/home/cjl/workspace/tilelang`，已合入 `tilelang/ascend`）的逐项对照、
+A5 主仓（`<tilelang-repo>`，已合入 `tilelang/ascend`）的逐项对照、
 「A5架构暂无」清单，以及本次新收录的主仓独有标准 OP。
 
 > 事实来源：运行时 `dir(tilelang.ascend.language)`、`dir(tilelang.ascend.language.simd)`
@@ -302,7 +302,7 @@ import tilelang.ascend.language as T
 ## 6. 复核命令
 
 ```bash
-cd /home/cjl/workspace/aiop
+cd <aiop-repo-root>
 python -m pytest -q                                   # 回归
 python -m aiop check --kernel <file>                  # API001/002/003
 python -m aiop search "T.simd vgatherb vscatter"      # 知识库召回

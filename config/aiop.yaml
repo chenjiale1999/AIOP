@@ -1,15 +1,16 @@
 paths:
-  tilelang_repo: /home/cjl/workspace/tilelang
-  workspace: /home/cjl/workspace/aiop/workspace
-  knowledge: /home/cjl/workspace/aiop/knowledge
-  samples: /home/cjl/workspace/aiop/samples
-  reports: /home/cjl/workspace/aiop/reports
-  # TileOPs manifest spec directory (source of truth for op contracts).
-  tileops_manifest: /home/cjl/workspace/TileOPs/src/tileops/manifest/spec
+  # Optional: leave empty to autodetect a sibling ``tilelang`` checkout,
+  # an installed A5 tilelang package, or a path from AIOP_TILELANG_REPO.
+  tilelang_repo: ""
+  # Project-relative defaults (resolved against the repository root):
+  # workspace / knowledge / samples / reports are omitted on purpose.
+  tileops_manifest: ""
 
 cann:
+  # Optional: leave empty to autodetect ASCEND_HOME_PATH / ASCEND_TOOLKIT_HOME
+  # or /usr/local/Ascend/{ascend-toolkit/latest,cann-*}.
   # A5 (dav-3510) headers/instructions require CANN 9.2.
-  home: /usr/local/Ascend/cann-9.2.0
+  home: ""
   npusim: ""
   soc_version: Ascend950
 

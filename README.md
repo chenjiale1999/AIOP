@@ -128,7 +128,7 @@ aiop 不是「让模型直接写代码」的代码生成器，而是**带门禁�
 ### 3.2 版本探测
 
 ```bash
-cd /home/cjl/workspace/aiop
+cd aiop
 
 python --version                  # ≥ 3.10
 python -c "import yaml; print(yaml.__version__)"   # ≥ 6.0
@@ -166,22 +166,23 @@ pip install pytest          # 可选：跑测试
 
 ### 4.3 配置路径
 
-编辑 [config/aiop.yaml](config/aiop.yaml)，至少确认 `paths.tilelang_repo` 与 `cann.home`：
+编辑 [config/aiop.yaml](config/aiop.yaml)。所有路径都可以留空自动探测：
 
 ```yaml
 paths:
-  tilelang_repo: /home/cjl/workspace/tilelang      # A5 原生 tilelang 仓
-  tileops_manifest: /home/cjl/workspace/TileOPs/src/tileops/manifest/spec
+  tilelang_repo: ""        # 留空：AIOP_TILELANG_REPO / 同级 tilelang / 已安装 A5 包
+  tileops_manifest: ""     # 留空：同级 TileOPs / 仓内 examples/spec
 cann:
-  home: /usr/local/Ascend/cann-9.2.0               # CANN 9.2+
+  home: ""                 # 留空：ASCEND_HOME_PATH / /usr/local/Ascend/{latest,cann-*}
   soc_version: Ascend950
 ```
 
-也可以用环境变量覆盖（优先级：**环境变量 > config YAML > 默认值**）：
+也可以用环境变量覆盖（优先级：**环境变量 > config YAML > 自动探测**）：
 
 ```bash
 export AIOP_TILELANG_REPO=/path/to/tilelang
-export AIOP_CANN_HOME=/usr/local/Ascend/cann-9.2.0
+export AIOP_CANN_HOME=/path/to/ascend-toolkit
+export AIOP_TILEOPS_MANIFEST=/path/to/manifest/spec
 ```
 
 ### 4.4 自检与冒烟
@@ -618,13 +619,13 @@ Campaign 实测（本机）：`softmax_2`（[examples/softmax.yaml](examples/sof
 
 | 配置项 | 默认值 | 说明 |
 |---|---|---|
-| `paths.tilelang_repo` | `/home/cjl/workspace/tilelang` | A5 原生 tilelang 仓（lowering/设备编译） |
+| `paths.tilelang_repo` | 自动探测 | A5 原生 tilelang 仓；`AIOP_TILELANG_REPO` / 同级 `tilelang` / 已安装包 |
 | `paths.workspace` | `<repo>/workspace` | 任务产物根目录 |
 | `paths.knowledge` | `<repo>/knowledge` | 知识库目录（检索与索引） |
 | `paths.samples` | `<repo>/samples` | 样例库目录 |
 | `paths.reports` | `<repo>/reports` | 基准报告目录 |
-| `paths.tileops_manifest` | `/home/cjl/workspace/TileOPs/src/tileops/manifest/spec` | manifest 默认目录（文件或目录均可） |
-| `cann.home` | `/usr/local/Ascend/cann-9.2.0` | `ASCEND_HOME_PATH` / `PATH` / `LD_LIBRARY_PATH` 来源 |
+| `paths.tileops_manifest` | 自动探测 | `AIOP_TILEOPS_MANIFEST` / 同级 TileOPs / `<repo>/examples/spec` |
+| `cann.home` | 自动探测 | `ASCEND_HOME_PATH` / `ASCEND_TOOLKIT_HOME` / `/usr/local/Ascend/...` |
 | `cann.npusim` | `""` | 为空时取 `<cann.home>/x86_64-linux/bin/npusim` |
 | `cann.soc_version` | `Ascend950` | `npusim record -s` 的目标芯片 |
 | `compile.target` | `ascend` | `tilelang.lower` 的 target |
@@ -1002,10 +1003,10 @@ TaskContract → SkillBundle → 候选计划 → 静态/编译门禁 → Loweri
 
 ## 18. 参考与复用
 
-- A3 多代理逻辑：`/home/cjl/workspace/tilelang-ascend/.opencode/agents`
+- A3 多代理逻辑：`tilelang-ascend` 仓的 `.opencode/agents`
 - Skill：`cannbot-skills`（tilelang-op-*、ops-simulator、ops-precision-standard 等）
-- A5 接口权威：`/home/cjl/workspace/tilelang`（`tilelang/ascend/README.md`、`examples/ascend/`）
-- TileOPs 契约：`/home/cjl/workspace/TileOPs/src/tileops/manifest/spec`（设计文档 `docs/design/manifest.md`）
+- A5 接口权威：`TILELANG_ROOT`（`tilelang/ascend/README.md`、`examples/ascend/`）
+- TileOPs 契约：`TILEOPS_MANIFEST`（设计文档 `docs/design/manifest.md`）
 - 设计要求：[some_ref.md](some_ref.md)
 
 本仓不修改上述参考仓；`scripts/sync_skills.sh` 用于从上游同步 skill 副本，

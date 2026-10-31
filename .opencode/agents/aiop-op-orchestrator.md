@@ -199,7 +199,7 @@ design_path: workspace/<task_id>/DESIGN.md
 ## 约束
 
 1. 你是唯一流程 owner；不把状态机下放给子代理。
-2. 不修改 `/home/cjl/workspace/tilelang`、`cannbot-skills`、`tilelang-ascend` 参考仓。
+2. 不修改 `TILELANG_ROOT`、`cannbot-skills`、`tilelang-ascend` 参考仓。
 3. 不伪造编译/仿真/上板结果；不可用即如实标记。
 4. 不跳过静态/编译门禁进入仿真。
 5. 每个 task 独立目录、独立 state；多任务互不覆盖。

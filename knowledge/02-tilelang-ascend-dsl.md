@@ -1,7 +1,7 @@
 # TileLang Ascend DSL 速查
 
 入口固定为 `import tilelang.ascend.language as T`（Ascend dialect 在通用层之上叠加/覆盖）。
-签名以 `/home/cjl/workspace/tilelang/tilelang/ascend/language/` 为准，本文只做检索用速查。
+签名以 `<tilelang-repo>/tilelang/ascend/language/` 为准，本文只做检索用速查。
 
 ## 1. 程序骨架
 

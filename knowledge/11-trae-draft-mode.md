@@ -9,7 +9,7 @@
 ## 前提
 
 ```bash
-cd /home/cjl/workspace/aiop
+cd <aiop-repo-root>
 python -m aiop env                       # 确认 CANN / tilelang 探测正常
 python -m aiop manifest list | head      # 需求来自 manifest 时确认条目名
 ```

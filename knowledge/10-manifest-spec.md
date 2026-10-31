@@ -3,7 +3,7 @@
 本文件说明 aiop 如何把 TileOPs 的算子契约（`src/tileops/manifest/spec/*.yaml`）
 变成可执行的 `TaskSpec`，以及哪些契约当前能生成、哪些会被如实挡住。
 
-上游权威：`/home/cjl/workspace/TileOPs/docs/design/manifest.md`（schema 定义）。
+上游权威：`<TileOPs-root>/docs/design/manifest.md`（schema 定义）。
 
 ## 为什么要接
 
@@ -31,7 +31,7 @@ python -m aiop generate --manifest /path/to/spec --op SoftmaxFwdOp --workload 3
 ```
 
 `--manifest` 可指向单文件或整个 `spec/` 目录；省略时用
-`paths.tileops_manifest`（默认 `/home/cjl/workspace/TileOPs/src/tileops/manifest/spec`）。
+`paths.tileops_manifest`（默认 `<TileOPs-root>/src/tileops/manifest/spec`）。
 `--workload` 接受行下标或 `label`。
 
 ## 绑定规则（`aiop/manifest.py`）

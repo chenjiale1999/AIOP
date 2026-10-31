@@ -3,7 +3,7 @@ name: tilelang-build
 description: Repository-specific build, rebuild, install, and test instructions for tilelang. Use when working in the tilelang repository and the correct commands are needed for building from source, reinstalling after changes, or running project tests.
 ---
 
-> **aiop 副本说明**：本 skill 复制自 `tilelang`（`/home/cjl/workspace/tilelang`）。文中 `../../..` 相对路径以该仓为根解析，`examples/`、`testing/`、`docs/` 均指该仓目录。重新同步：`scripts/sync_skills.sh`。
+> **aiop 副本说明**：本 skill 复制自 `tilelang`（`由 TILELANG_ROOT 指定的 tilelang 仓`）。文中 `../../..` 相对路径以该仓为根解析，`examples/`、`testing/`、`docs/` 均指该仓目录。重新同步：`scripts/sync_skills.sh`。
 
 # Build & Install
 

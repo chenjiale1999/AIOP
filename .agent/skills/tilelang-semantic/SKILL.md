@@ -3,7 +3,7 @@ name: tilelang-semantic
 description: Design, implement, debug, or review TileLang semantic rules and validation, including loop nesting, buffer bounds/initialization/ownership, data races, synchronization and async lifecycles, TileOp shape/dtype/scope contracts, software pipelines, reducers, layouts, kernel launch constraints, and actionable diagnostics. Use when changing tilelang/analysis checkers, early Verify* passes, language legality rules, or regression tests for invalid TileLang programs.
 ---
 
-> **aiop 副本说明**：本 skill 复制自 `tilelang`（`/home/cjl/workspace/tilelang`）。文中 `../../..` 相对路径以该仓为根解析，`examples/`、`testing/`、`docs/` 均指该仓目录。重新同步：`scripts/sync_skills.sh`。
+> **aiop 副本说明**：本 skill 复制自 `tilelang`（`由 TILELANG_ROOT 指定的 tilelang 仓`）。文中 `../../..` 相对路径以该仓为根解析，`examples/`、`testing/`、`docs/` 均指该仓目录。重新同步：`scripts/sync_skills.sh`。
 
 # TileLang Semantic Validation
 
